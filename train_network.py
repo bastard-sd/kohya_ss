@@ -679,8 +679,11 @@ class NetworkTrainer:
             beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, clip_sample=False
         )
         prepare_scheduler_for_custom_training(noise_scheduler, accelerator.device)
-        if args.zero_terminal_snr:
-            custom_train_functions.fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler)
+        
+        # Zero Terminal SNR, always set it on.
+        # if args.zero_terminal_snr:
+        #     custom_train_functions.fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler)
+        custom_train_functions.fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler)
 
         if accelerator.is_main_process:
             init_kwargs = {}
@@ -723,7 +726,12 @@ class NetworkTrainer:
                 accelerator.print(f"removing old checkpoint: {old_ckpt_file}")
                 os.remove(old_ckpt_file)
 
-
+        # ##########################################################################################
+        # ##########################################################################################
+        # ##########################################################################################
+        # refactor into its own file.
+        
+        
         # for network_module in network.text_encoder_loras:
         #     random_dropout = random.uniform(0, args.network_dropout)
         #     network_module.dropout = random_dropout
@@ -732,6 +740,8 @@ class NetworkTrainer:
         import clip
         import torch.nn as nn
         import pytorch_lightning as pl
+        import safetensors.torch
+        import re
 
         from library import sdxl_model_util
         from PIL import Image
@@ -765,10 +775,10 @@ class NetworkTrainer:
         class TextualInversionEmbed():
             def __init__(self, embed_path):
                 embed = self._load_embedding(embed_path)
-                self.embed = self._process_embedding(embed)
+                self.embedding = self._process_embedding(embed)
 
             def _load_embedding(self, embed_path):
-                if embed_path.endswith('.safetensor'):
+                if embed_path.endswith('.safetensors'):
                     return safetensors.torch.load_file(embed_path, device="cpu")
                 else:  # Assuming .pt/.bin file
                     return torch.load(embed_path, map_location="cpu")
@@ -780,11 +790,10 @@ class NetworkTrainer:
                     embed_out = self._aggregate_list_embeddings(embed)
                 else:
                     embed_out = next(iter(embed.values()))
-
-                normalized_embed = embed_out / embed_out.norm(dim=-1, keepdim=True)
-                aggregated_tensor = normalized_embed.sum().unsqueeze(0)
-
-                self._check_embedding_dimension(aggregated_tensor)
+                    
+                # normalized_embed = embed_out / embed_out.norm(dim=-1, keepdim=True)
+                self._check_embedding_dimension(embed_out)
+                aggregated_tensor = embed_out.squeeze().mean()
                 return aggregated_tensor
 
             def _aggregate_list_embeddings(self, embed_list):
@@ -883,10 +892,28 @@ class NetworkTrainer:
                     text_embedding = clip_model.encode_text(text_input)
                 return text_embedding / text_embedding.norm(dim=-1, keepdim=True)
 
-        class PretrainedEmbeddingDiscriminator(BaseCosineSimilarityDiscriminator):
-            def __init__(self, manager, name, weight, loss_func, embed_path):
+
+        class PromptDiscriminator(BaseCosineSimilarityDiscriminator):
+            def __init__(self, manager, name, weight, loss_func, prompt):
                 super().__init__(manager, name, weight, loss_func)
-                self.embedding = TextualInversionEmbed(embed_path).embed.to(manager.device)
+                self.embedding = self._get_text_embedding(prompt).to(manager.device)
+
+            def _get_text_embedding(self, prompt):
+                embeddings = get_weighted_text_embeddings(
+                    tokenizer,
+                    text_encoder,
+                    prompt,
+                    accelerator.device,
+                    1, # 1 * 75 token max length, I think 1 is necessary for compatibility with loaded embeddings.
+                    1, # Clip Skip
+                )
+                return embeddings[0].squeeze().mean()
+            
+            
+        class PretrainedEmbeddingDiscriminator(BaseCosineSimilarityDiscriminator):
+            def __init__(self, manager, name, weight, loss_func, model):
+                super().__init__(manager, name, weight, loss_func)
+                self.embedding = model.embedding.to(manager.device)
 
 
         class AestheticDiscriminator(BaseDiscriminator):
@@ -912,12 +939,13 @@ class NetworkTrainer:
 
 
         class DiscriminatorManager:
-            def __init__(self, device, noise_scheduler, is_sdxl, save_image_steps=10):
+            def __init__(self, device, noise_scheduler, is_sdxl, save_image_steps=10, print_diagnnostics=False):
                 self.discriminators = {}
                 self.device = device
                 self.noise_scheduler = noise_scheduler
                 self.vit_model = clip.load("ViT-L/14", device=device)
                 self.is_sdxl = is_sdxl
+                self.print_diagnnostics = print_diagnnostics
                 self.save_image_steps = save_image_steps
                 if is_sdxl:
                     self.vae_model = AutoencoderTiny.from_pretrained("madebyollin/taesdxl", torch_dtype=torch.float16).to(device)
@@ -930,8 +958,11 @@ class NetworkTrainer:
             def add_classifier(self, name, weight, loss_func, model):
                 self.discriminators[name] = ClassifierDiscriminator(self, name, weight, loss_func, model)
 
-            def add_embedding_text(self, name, weight, loss_func, prompt):
-                self.discriminators[name] = TextDiscriminator(self, name, weight, loss_func, prompt)
+            def add_embedding_text(self, name, weight, loss_func, prompt, multi_token=False):
+                if multi_token:
+                    self.discriminators[name] = PromptDiscriminator(self, name, weight, loss_func, prompt)
+                else:
+                    self.discriminators[name] = TextDiscriminator(self, name, weight, loss_func, prompt)
 
             def add_embedding_pretrained(self, name, weight, loss_func, embed_path):
                 self.discriminators[name] = PretrainedEmbeddingDiscriminator(self, name, weight, loss_func, embed_path)
@@ -1007,9 +1038,9 @@ class NetworkTrainer:
 
                     # Try to normalize loss scale across different timesteps
                     #discriminator_loss = scale_v_prediction_loss_like_noise_prediction(discriminator_loss, timesteps, noise_scheduler)
-
-                    self._print_diagnostics(discriminator_name, timesteps, original_scores, denoised_scores, discriminator_loss, base_loss)
-
+                    if self.print_diagnnostics:
+                        self._print_diagnostics(discriminator_name, timesteps, original_scores, denoised_scores, discriminator_loss, base_loss)
+                        
                     modified_loss += discriminator_loss
 
                 return base_loss + modified_loss
@@ -1278,95 +1309,109 @@ class NetworkTrainer:
                 sharpness_tensor = torch.tensor(sharpness_scores, dtype=torch.float32)
 
                 return sharpness_tensor
+        
+        def load_json_file(file_path):
+            with open(file_path, 'r') as file:
+                return json.load(file)
+                 
+        def classifier_lambda(obj):
+            if obj["classifierType"] == "custom":
+                match = re.search(r'[-+]?\d*\.\d+|\d+$', obj["classifierExpression"])
+                # Use regular expression to find the last numeric sequence (integer or float)
+                if not match:
+                    raise ValueError(f"Invalid classifierExpression: {obj['classifierExpression']}")
+                elif "negative_loss_scale" in obj["classifierExpression"]:
+                    scale_value = float(match.group())
+                    classifier_lambda = lambda x, y: positive_classifier_mse(x, y, negative_loss_scale=scale_value)
+                elif "min_original_score" in obj["classifierExpression"]:
+                    score_value = int(match.group())
+                    classifier_lambda = lambda x, y: positive_classifier_mse(x, y, min_original_score=score_value)
+                elif "power" in obj["classifierExpression"]:
+                    power_value = int(match.group())
+                    classifier_lambda = lambda x, y: positive_classifier_mse(x, y, power=power_value)
+            else:
+                classifier_lambda = positive_classifier_mse if obj["classifierType"] == 'positive_classifier_mse' else negative_classifier_mse
+            
+            return classifier_lambda
+        
+        def add_aesthetics(discriminator_manager, aesthetics):
+            for aesthetic in aesthetics:
+                model_type = AestheticModelLinear if aesthetic["modelType"] == 'AestheticModelLinear' else AestheticModelReLU
+                discriminator_manager.add_aesthetic(
+                    aesthetic["name"],
+                    aesthetic["priority"],
+                    classifier_lambda(aesthetic),
+                    model_type(aesthetic["filePath"])
+                )
+     
+        def add_functions(discriminator_manager, functions):
+            for function in functions:
+                if "NoiseAnalysis" in function["functionType"]:
+                    if "sharpness_tensor" in function["functionType"]:
+                        function_lambda = NoiseAnalysis.sharpness_tensor
+                    elif "entropy" in function["functionType"]:
+                        function_lambda = NoiseAnalysis.entropy
+                    elif "kurtosis" in function["functionType"]:
+                        function_lambda = NoiseAnalysis.kurtosis
+                elif "custom" in function["functionType"]:
+                    if "Entropy - Kurtosis" in function["functionExpression"]:
+                        function_lambda = lambda x: NoiseAnalysis.entropy(x) - NoiseAnalysis.kurtosis(x)
+                
+                discriminator_manager.add_function(
+                    function["name"],
+                    function["priority"],
+                    classifier_lambda(function),
+                    function_lambda,
+                    function.get("additionalParameter", None)  # Optional parameter
+                )
+                
+        def add_embeddings(discriminator_manager, embeddings):
+            for embedding in embeddings:
+                embedding_model = None
+                if "TextualInversionEmbed" in embedding["embeddingType"]:
+                    embedding_model = TextualInversionEmbed(embedding["filePath"])
+                discriminator_manager.add_embedding_pretrained(
+                    embedding["name"],
+                    embedding["priority"],
+                    classifier_lambda(embedding),
+                    embedding_model
+                )
+                
+        def add_embedding_texts(discriminator_manager, embedding_texts):
+            for embedding_text in embedding_texts:
+                discriminator_manager.add_embedding_text(
+                    embedding_text["name"],
+                    embedding_text["priority"],
+                    classifier_lambda(embedding_text),
+                    embedding_text["text"],
+                    multi_token=embedding_text["multiToken"] if "multiToken" in embedding_text else False
+                )
 
 
+        # instead of passin gloss func direction  you can pass a lambda to it
+        # to call it with optional arguments
+        # so if you set negative_loss_scale to 0
+        # you dont reward it for doing better than the original image
+        # if you set it to -1
+        # you punish any deviation from original score
+        # positive or negative
+        # if you set it to 0.5 (default)
+        # then improvements over original image get negative loss of half the MSE
+        
+        json_file_path = './/discriminator_config.json'
+        data = load_json_file(json_file_path)
         discriminator_manager = DiscriminatorManager(accelerator.device, noise_scheduler, self.is_sdxl)
-        # discriminator_manager.add_aesthetic(
-        #     "fellatio",
-        #     5,
-        #     lambda x, y: positive_classifier_mse(x, y, min_original_score=0.5),
-        #     AestheticModelReLU(
-        #         r"G:\Stable Diffusion\Training\Classification\fellatio\models\fellatio_layers[L1024, R, D0.3, L128, R, D0.2, L64, R, D0.1, L16, D0.01, L1]-v476_e10_l2p4600.pt",
-        #     )    
-        # )
-        discriminator_manager.add_classifier(
-            "blacked_cover",
-            5,
-            positive_classifier_mse,
-            #lambda x, y: positive_classifier_mse(x, y, min_original_score=0.5),
-            AestheticModelReLU(
-                r"G:\Stable Diffusion\Training\Classification\blacked_cover\models\blacked_cover_layers[L1024, R, D0.3, L128, R, D0.2, L64, R, D0.1, L16, D0.01, L1]-v496_e97_l0p0006.pt",
-            )    
-        )
-        discriminator_manager.add_aesthetic(
-            "cute",
-            2.5,
-            positive_classifier_mse,
-            #lambda x, y: positive_classifier_mse(x, y, min_original_score=0.5),
-            AestheticModelReLU(
-                r"G:\Stable Diffusion\Training\Classification\cute\models\cute_layers[L1024, R, D0.3, L128, R, D0.2, L64, R, D0.1, L16, D0.01, L1]-v480_e1_l0p6219.pt",
-            )    
-        )
 
-        discriminator_manager.add_function(
-            "sharpness",
-            1,
-            positive_classifier_mse,
-            NoiseAnalysis.sharpness_tensor,
-            #"image"
-            "decode"
-        )
-
-        # discriminator_manager.add_cosine(
-        #     "positive_interracial",
-        #     2,
-        #     positive_classifier_mse,
-        #     "interracial fellatio, huge penis, dark black penis, veiny penis, beautiful eyes, gorgeous hair",
-        # )
-        # discriminator_manager.add_cosine(
-        #     "positive_freckles",
-        #     10,
-        #     positive_classifier_mse,
-        #     "cute freckles, adorable freckles, freckled little girl",
-        # )
-        discriminator_manager.add_embedding_text(
-            "positive_photorealism",
-            2,
-            positive_classifier_mse,
-            "UHD, skin texture, high detail, lighting, photorealistic, skin pores, RAW photo, sharp focus, fine detail, texture, macro lens, HDR, lighting",
-            #"exquisite professional quality photograph, 100mm macro lens, sharp focus, RAW photo, fine details, beautiful sparkling eyes, high detail skin texture"
-        )
-        discriminator_manager.add_embedding_text(
-            "negative_photorealism",
-            1,
-            negative_classifier_mse,
-            #"lowres, blurred, low detail, jpg artifacts, error, blurry, airbrushed, interlaced, painting, watermark, logo, signature, username, artist name, censored",
-            "lowres, blurred, low detail, jpg artifacts, error, blurry, airbrushed, interlaced, painting, censored",
-        )
-        # discriminator_manager.add_function(
-        #     "noise",
-        #     1,
-        #     positive_classifier_mse,
-        #     NoiseAnalysis.noise,
-        #     "image"
-        # )
-        discriminator_manager.add_function(
-            "entropy",
-            1,
-            positive_classifier_mse,
-            NoiseAnalysis.entropy,
-            #lambda x: NoiseAnalysis.entropy(x) - NoiseAnalysis.kurtosis(x),
-            "noise"
-        )
-        # discriminator_manager.add_function(
-        #     "kurtosis",
-        #     1,
-        #     lambda x,y: positive_classifier_mse(x, y, negative_loss_scale=-1),
-        #     NoiseAnalysis.kurtosis,
-        #     "noise"
-        # )
+        add_aesthetics(discriminator_manager, data["aesthetics"])
+        add_functions(discriminator_manager, data["functions"])
+        add_embeddings(discriminator_manager, data["embeddings"])
+        add_embedding_texts(discriminator_manager, data["embeddingTexts"])
 
 
+        # ##########################################################################################
+        # ##########################################################################################
+        # ##########################################################################################
+        
         # For --sample_at_first
         self.sample_images(accelerator, args, 0, global_step, accelerator.device, discriminator_manager.vae_model, tokenizer, text_encoder, unet)
 
@@ -1460,6 +1505,8 @@ class NetworkTrainer:
                     if args.debiased_estimation_loss:
                         loss = apply_debiased_estimation(loss, timesteps, noise_scheduler)
 
+                    ### discriminator_manager loss modification HERE
+
                     if len(discriminator_manager.discriminators) > 0:
                         #loss = apply_discriminator_losses(loss, noise_pred, target)
                         # if args.ip_noise_gamma:
@@ -1502,10 +1549,13 @@ class NetworkTrainer:
                         # This is the same as latents
                         #denoised_noisy_latents = remove_noise(noise_scheduler, noisy_latents, noise, timesteps)
 
-                    # Calculate the mean of the total loss
-                    loss = loss.mean()
+                    ### 
 
-                    accelerator.backward(loss)
+                    # Calculate the mean of the total loss
+                    loss = loss.mean()  # 平均なのでbatch_sizeで割る必要なし
+
+                    accelerator.backward(loss, retain_graph=True)
+                    
                     self.all_reduce_network(accelerator, network)  # sync DDP grad manually
                     if accelerator.sync_gradients and args.max_grad_norm != 0.0:
                         params_to_clip = accelerator.unwrap_model(network).get_trainable_params()
