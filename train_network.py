@@ -47,11 +47,15 @@ from library.custom_train_functions import (
     apply_debiased_estimation,
 )
 
+import signal
+import sys
+from sdxl_gen_img import get_weighted_text_embeddings as get_weighted_sdxl_text_embeddings
+
 
 class NetworkTrainer:
     def __init__(self):
         self.vae_scale_factor = 0.18215
-        self.is_sdxl = False
+        self.is_sdxl = True
 
     # TODO 他のスクリプトと共通化する
     def generate_step_logs(
@@ -200,8 +204,8 @@ class NetworkTrainer:
             # use arbitrary dataset class
             train_dataset_group = train_util.load_arbitrary_dataset(args, tokenizer)
 
-        current_epoch = Value("i", 0)
-        current_step = Value("i", 0)
+        self.current_epoch = current_epoch = Value("i", 0)
+        self.current_step = current_step = Value("i", 0)
         ds_for_collator = train_dataset_group if args.max_data_loader_n_workers == 0 else None
         collator = train_util.collator_class(current_epoch, current_step, ds_for_collator)
 
@@ -223,7 +227,7 @@ class NetworkTrainer:
 
         # acceleratorを準備する
         print("preparing accelerator")
-        accelerator = train_util.prepare_accelerator(args)
+        self.accelerator = accelerator = train_util.prepare_accelerator(args)
         is_main_process = accelerator.is_main_process
 
         # mixed precisionに対応した型を用意しておき適宜castする
@@ -232,7 +236,8 @@ class NetworkTrainer:
 
         # モデルを読み込む
         model_version, text_encoder, vae, unet = self.load_target_model(args, weight_dtype, accelerator)
-
+        self.vae = vae
+        
         # text_encoder is List[CLIPTextModel] or CLIPTextModel
         text_encoders = text_encoder if isinstance(text_encoder, list) else [text_encoder]
 
@@ -292,6 +297,7 @@ class NetworkTrainer:
         # if a new network is added in future, add if ~ then blocks for each network (;'∀')
         if args.dim_from_weights:
             network, _ = network_module.create_network_from_weights(1, args.network_weights, vae, text_encoder, unet, **net_kwargs)
+            self.network = network
         else:
             if "dropout" not in net_kwargs:
                 # workaround for LyCORIS (;^ω^)
@@ -307,6 +313,7 @@ class NetworkTrainer:
                 neuron_dropout=args.network_dropout,
                 **net_kwargs,
             )
+            self.network = network
         if network is None:
             return
 
@@ -673,7 +680,7 @@ class NetworkTrainer:
                 minimum_metadata[key] = metadata[key]
 
         progress_bar = tqdm(range(args.max_train_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
-        global_step = 0
+        self.global_step = global_step = 0
 
         noise_scheduler = DDPMScheduler(
             beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, clip_sample=False
@@ -742,6 +749,8 @@ class NetworkTrainer:
         import pytorch_lightning as pl
         import safetensors.torch
         import re
+        from typing import Any, List, NamedTuple, Optional, Tuple, Union, Callable
+        from transformers import CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPImageProcessor
 
         from library import sdxl_model_util
         from PIL import Image
@@ -751,6 +760,38 @@ class NetworkTrainer:
 
         from diffusers import AutoencoderTiny
 
+
+        token_replacements_list = []
+        for _ in range(len(text_encoders)):
+            token_replacements_list.append({})
+         
+            
+        def add_token_replacement(token_replacements_list, text_encoder_index, target_token_id, rep_token_ids):
+            token_replacements_list[text_encoder_index][target_token_id] = rep_token_ids
+
+
+        def get_token_replacer(tokenizers, tokenizer, token_replacements_list):
+            if token_replacements_list is None:
+                return []
+            
+            tokenizer_index = tokenizers.index(tokenizer)
+            token_replacements = token_replacements_list[tokenizer_index]
+
+            def replace_tokens(tokens):
+                # print("replace_tokens", tokens, "=>", token_replacements)
+                if isinstance(tokens, torch.Tensor):
+                    tokens = tokens.tolist()
+
+                new_tokens = []
+                for token in tokens:
+                    if token in token_replacements:
+                        replacement = token_replacements[token]
+                        new_tokens.extend(replacement)
+                    else:
+                        new_tokens.append(token)
+                return new_tokens
+
+            return replace_tokens
 
 
         def positive_classifier_mse(original_scores, denoised_scores, power=2, min_original_score=-100, negative_loss_scale=0.5):
@@ -767,10 +808,10 @@ class NetworkTrainer:
             
             return loss
 
-
         # For BAD scores we simply swap the order
         def negative_classifier_mse(original_scores, denoised_scores):
             return positive_classifier_mse(denoised_scores, original_scores)     
+
 
         class TextualInversionEmbed():
             def __init__(self, embed_path):
@@ -792,7 +833,7 @@ class NetworkTrainer:
                     embed_out = next(iter(embed.values()))
                     
                 # normalized_embed = embed_out / embed_out.norm(dim=-1, keepdim=True)
-                self._check_embedding_dimension(embed_out)
+                # self._check_embedding_dimension(embed_out)
                 aggregated_tensor = embed_out.squeeze().mean()
                 return aggregated_tensor
 
@@ -802,7 +843,7 @@ class NetworkTrainer:
                 return torch.cat(out_list, dim=0)
 
             def _check_embedding_dimension(self, embed_tensor):
-                expected_emb_dim = text_encoder.get_input_embeddings().weight.shape[-1]
+                expected_emb_dim = text_encoders[0].get_input_embeddings().weight.shape[-1]
                 if expected_emb_dim != embed_tensor.shape[-1]:
                     raise ValueError(f"Loaded embeddings are of incorrect shape. Expected {expected_emb_dim}, but are {embed_tensor.shape[-1]}")
 
@@ -824,6 +865,7 @@ class NetworkTrainer:
                     raise NotImplementedError("Layers must be defined in subclass")
                 return self.layers(x)
 
+
         class AestheticModelReLU(AestheticModelBase):
             def __init__(self, model_path):
                 super(AestheticModelReLU, self).__init__()
@@ -843,6 +885,7 @@ class NetworkTrainer:
                 )
                 self.load_model(model_path)
 
+
         class AestheticModelLinear(AestheticModelBase):
             def __init__(self, model_path):
                 super(AestheticModelLinear, self).__init__()
@@ -859,6 +902,7 @@ class NetworkTrainer:
                 )
                 self.load_model(model_path)
 
+
         class BaseDiscriminator:
             def __init__(self, manager, name, weight, loss_func, input_type='embedding'):
                 self.manager = manager
@@ -872,6 +916,7 @@ class NetworkTrainer:
             def compute_loss(self, original_scores, denoised_scores):
                 return self.loss_func(original_scores, denoised_scores)
 
+
         class BaseCosineSimilarityDiscriminator(BaseDiscriminator):
             def __init__(self, manager, name, weight, loss_func):
                 super().__init__(manager, name, weight, loss_func)
@@ -880,6 +925,7 @@ class NetworkTrainer:
                 return 5 * torch.nn.functional.cosine_similarity(embeddings, self.embedding, dim=-1)
 
 
+        # TODO: This needs to work with both sd15 and sdxl
         class TextDiscriminator(BaseCosineSimilarityDiscriminator):
             def __init__(self, manager, name, weight, loss_func, prompt):
                 super().__init__(manager, name, weight, loss_func)
@@ -896,18 +942,59 @@ class NetworkTrainer:
         class PromptDiscriminator(BaseCosineSimilarityDiscriminator):
             def __init__(self, manager, name, weight, loss_func, prompt):
                 super().__init__(manager, name, weight, loss_func)
-                self.embedding = self._get_text_embedding(prompt).to(manager.device)
+                self.embedding = self._get_weighted_text_embeddings(
+                    manager.is_sdxl,
+                    tokenizers=manager.tokenizers,
+                    text_encoders=manager.text_encoders,
+                    prompt=prompt,
+                    device=manager.device
+                ).to(manager.device)
 
-            def _get_text_embedding(self, prompt):
-                embeddings = get_weighted_text_embeddings(
-                    tokenizer,
-                    text_encoder,
-                    prompt,
-                    accelerator.device,
-                    1, # 1 * 75 token max length, I think 1 is necessary for compatibility with loaded embeddings.
-                    1, # Clip Skip
-                )
-                return embeddings[0].squeeze().mean()
+            def _get_weighted_text_embeddings(
+                    self,
+                    is_sdxl,
+                    tokenizers=None,
+                    text_encoders=None,
+                    prompt='',
+                    token_replacements_list=None,
+                    max_embeddings_multiples=1,
+                    clip_skip=1,
+                    device='cpu',
+                    **kwargs,
+                ):
+                if is_sdxl:
+                    tes_text_embs = []
+                    for tokenizer, text_encoder in zip(tokenizers, text_encoders):
+                        token_replacer = get_token_replacer(tokenizers, tokenizer, token_replacements_list)
+                        text_embeddings, _, _, _, _ = get_weighted_sdxl_text_embeddings(
+                            tokenizer,
+                            text_encoder,
+                            prompt=prompt,
+                            max_embeddings_multiples=max_embeddings_multiples,
+                            clip_skip=clip_skip,
+                            token_replacer=token_replacer,
+                            device=device,
+                            **kwargs,
+                        )
+                        tes_text_embs.append(text_embeddings)
+
+                    # concat text encoder outputs
+                    text_embeddings = tes_text_embs[0]
+                    for i in range(1, len(tes_text_embs)):
+                        text_embeddings = torch.cat([text_embeddings, tes_text_embs[i]], dim=2)  # n,77,2048
+
+                else:
+                    text_embeddings = get_weighted_text_embeddings(
+                        tokenizers[0],
+                        text_encoders[0],
+                        prompt,
+                        device,
+                        max_embeddings_multiples=max_embeddings_multiples, # 1 * 75 token max length, I think 1 is necessary for compatibility with loaded embeddings.
+                        clip_skip=clip_skip, # Clip Skip
+                    )
+                    
+                processed_embedding = text_embeddings[0].squeeze().mean()
+                return processed_embedding
             
             
         class PretrainedEmbeddingDiscriminator(BaseCosineSimilarityDiscriminator):
@@ -937,19 +1024,22 @@ class NetworkTrainer:
                 super().__init__(manager, name, weight, loss_func, input_type=input_type)
                 self.compute_scores = score_func
 
-
         class DiscriminatorManager:
-            def __init__(self, device, noise_scheduler, is_sdxl, save_image_steps=10, print_diagnnostics=False):
+            def __init__(self, device, noise_scheduler, tokenizers, text_encoders, is_sdxl, save_image_steps=10, print_diagnnostics=False):
                 self.discriminators = {}
                 self.device = device
                 self.noise_scheduler = noise_scheduler
+                self.tokenizers = tokenizers
+                self.text_encoders = text_encoders
                 self.vit_model = clip.load("ViT-L/14", device=device)
                 self.is_sdxl = is_sdxl
                 self.print_diagnnostics = print_diagnnostics
                 self.save_image_steps = save_image_steps
                 if is_sdxl:
+                    print('VAE = SDXL')
                     self.vae_model = AutoencoderTiny.from_pretrained("madebyollin/taesdxl", torch_dtype=torch.float16).to(device)
                 else:
+                    print('VAE = SD15')
                     self.vae_model = AutoencoderTiny.from_pretrained("madebyollin/taesd", torch_dtype=torch.float16).to(device)
 
             def add_aesthetic(self, name, weight, loss_func, model):
@@ -1100,7 +1190,8 @@ class NetworkTrainer:
                         images = (images / 2 + 0.5).clamp(0, 1)
                         # Convert to 0-255 range and change layout to [batch, height, width, channels]
                         images = images.cpu().permute(0, 2, 3, 1).float().numpy()
-                        images = (images * 255).round().astype("uint8")
+                        images = np.nan_to_num(images, nan=0.0, posinf=0.0, neginf=0.0)
+                        images = (images * 255).clip(0, 255).round().astype("uint8")
                         return [Image.fromarray(im) for im in images]
 
                 return to_PIL(original_decodes), to_PIL(denoised_decodes)
@@ -1400,7 +1491,7 @@ class NetworkTrainer:
         
         json_file_path = './/discriminator_config.json'
         data = load_json_file(json_file_path)
-        discriminator_manager = DiscriminatorManager(accelerator.device, noise_scheduler, self.is_sdxl)
+        discriminator_manager = DiscriminatorManager(accelerator.device, noise_scheduler, tokenizers, text_encoders, self.is_sdxl, save_image_steps=100, print_diagnnostics=True)
 
         add_aesthetics(discriminator_manager, data["aesthetics"])
         add_functions(discriminator_manager, data["functions"])
@@ -1413,7 +1504,8 @@ class NetworkTrainer:
         # ##########################################################################################
         
         # For --sample_at_first
-        self.sample_images(accelerator, args, 0, global_step, accelerator.device, discriminator_manager.vae_model, tokenizer, text_encoder, unet)
+        args.sample_at_first = True
+        self.sample_images(accelerator, args, 0, 0, accelerator.device, vae, tokenizer, text_encoder, unet)
 
         use_timestep_window = False
         
@@ -1602,7 +1694,7 @@ class NetworkTrainer:
                     progress_bar.update(1)
                     global_step += 1
 
-                    self.sample_images(accelerator, args, None, global_step, accelerator.device, discriminator_manager.vae_model, tokenizer, text_encoder, unet)
+                    self.sample_images(accelerator, args, None, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
 
                     # 指定ステップごとにモデルを保存
                     if args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0:
@@ -1656,7 +1748,7 @@ class NetworkTrainer:
                     if args.save_state:
                         train_util.save_and_remove_state_on_epoch_end(args, accelerator, epoch + 1)
 
-            self.sample_images(accelerator, args, epoch + 1, global_step, accelerator.device, discriminator_manager.vae_model, tokenizer, text_encoder, unet)
+            self.sample_images(accelerator, args, epoch + 1, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
 
             # end of epoch
 
@@ -1760,11 +1852,36 @@ def setup_parser() -> argparse.ArgumentParser:
     return parser
 
 
+
+
+def run_trainer(args, save_and_exit_event):
+    trainer = NetworkTrainer()
+    
+    def save_and_exit(signum, frame):
+        ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, trainer.global_step)
+        
+        trainer.save_model(
+            ckpt_name, trainer.accelerator.unwrap_model(trainer.network), trainer.global_step, trainer.current_epoch
+        );
+        train_util.save_and_remove_state_stepwise(args, trainer.accelerator, trainer.global_step)
+        print(f"Received signal {signum}, saving model and exiting.")
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, save_and_exit)
+    signal.signal(signal.SIGTERM, save_and_exit)
+    
+    save_and_exit_event.wait()  # Wait for the event to be set
+    trainer.train(args)
+    
+
 if __name__ == "__main__":
     parser = setup_parser()
-
     args = parser.parse_args()
     args = train_util.read_config_from_file(args, parser)
 
-    trainer = NetworkTrainer()
-    trainer.train(args)
+    # Create an event to signal when to save and exit
+    save_and_exit_event = multiprocessing.Event()
+
+    # Run the trainer in a separate process
+    trainer_process = multiprocessing.Process(target=run_trainer, args=(args, save_and_exit_event))
+    trainer_process.start()
