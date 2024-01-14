@@ -770,12 +770,11 @@ class NetworkTrainer:
             token_replacements_list[text_encoder_index][target_token_id] = rep_token_ids
 
 
-        def get_token_replacer(tokenizers, tokenizer, token_replacements_list):
-            if token_replacements_list is None:
-                return []
-            
+        def get_token_replacer(tokenizers, tokenizer, token_replacements_list=[]):
             tokenizer_index = tokenizers.index(tokenizer)
-            token_replacements = token_replacements_list[tokenizer_index]
+            token_replacements = []
+            if len(token_replacements_list) > 0:
+                token_replacements = token_replacements_list[tokenizer_index]
 
             def replace_tokens(tokens):
                 # print("replace_tokens", tokens, "=>", token_replacements)
@@ -953,10 +952,10 @@ class NetworkTrainer:
             def _get_weighted_text_embeddings(
                     self,
                     is_sdxl,
-                    tokenizers=None,
-                    text_encoders=None,
+                    tokenizers=[],
+                    text_encoders=[],
                     prompt='',
-                    token_replacements_list=None,
+                    token_replacements_list=[],
                     max_embeddings_multiples=1,
                     clip_skip=1,
                     device='cpu',
