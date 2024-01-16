@@ -1,0 +1,160 @@
+{
+    "aesthetics": [
+      {
+        "name": "Aesthetic: cute_v455",
+        "priority": 8,
+        "classifierType": "positive_classifier_mse",
+        "modelType": "AestheticModelReLU",
+        "filePath": ".//0_bastard//cute_v455_e0_l1p1067.pt"
+      },
+      {
+        "name": "Aesthetic: ava+logos",
+        "priority": 5,
+        "classifierType": "positive_classifier_mse",
+        "modelType": "AestheticModelReLU",
+        "filePath": ".//0_bastard//ava+logos-l14-reluMSE.pth"
+      }
+    ],
+    "functions": [
+      {
+        "name": "Sharpness",
+        "priority": 2,
+        "classifierType": "positive_classifier_mse",
+        "functionType": "NoiseAnalysis.sharpness_tensor",
+        "additionalParameter": "decode"
+      },
+      {
+        "name": "Entropy",
+        "priority": 2,
+        "classifierType": "positive_classifier_mse",
+        "functionType": "NoiseAnalysis.entropy",
+        "additionalParameter": "noise"
+      },
+      {
+        "name": "Kurtosis",
+        "priority": 2,
+        "classifierType": "custom",
+        "classifierExpression": "negative_loss_scale=-1",
+        "functionType": " NoiseAnalysis.kurtosis",
+        "additionalParameter": "noise"
+      },
+      {
+        "name": "Entropy - Kurtosis",
+        "priority": 2,
+        "classifierType": "positive_classifier_mse",
+        "functionType": "custom",
+        "functionExpression": "Entropy - Kurtosis",
+        "additionalParameter": "noise"
+      }
+    ],
+    "embeddings": [
+      {
+        "name": "bnegv1_g2b",
+        "priority": 2,
+        "classifierType": "negative_classifier_mse",
+        "embeddingType": "TextualInversionEmbed",
+        "filePath": ".//0_bastard//XL//bnegv1_g2b.safetensors"
+      },
+      {
+        "name": "bnegv2_g0",
+        "priority": 2,
+        "classifierType": "negative_classifier_mse",
+        "embeddingType": "TextualInversionEmbed",
+        "filePath": ".//0_bastard//XL//bnegv2_g0.safetensors"
+      },
+      {
+        "name": "bnegv3_g1",
+        "priority": 2,
+        "classifierType": "negative_classifier_mse",
+        "embeddingType": "TextualInversionEmbed",
+        "filePath": ".//0_bastard//XL//bnegv3_g1.safetensors"
+      },
+      {
+        "name": "negativeXL_A",
+        "priority": 2,
+        "classifierType": "negative_classifier_mse",
+        "embeddingType": "TextualInversionEmbed",
+        "filePath": ".//0_bastard//XL//negativeXL_A.safetensors"
+      },
+      {
+        "name": "negativeXL_B",
+        "priority": 2,
+        "classifierType": "negative_classifier_mse",
+        "embeddingType": "TextualInversionEmbed",
+        "filePath": ".//0_bastard//XL//negativeXL_B.safetensors"
+      },
+      {
+        "name": "negativeXL_C",
+        "priority": 2,
+        "classifierType": "negative_classifier_mse",
+        "embeddingType": "TextualInversionEmbed",
+        "filePath": ".//0_bastard//XL//negativeXL_C.safetensors"
+      },
+      {
+        "name": "negativeXL_D",
+        "priority": 2,
+        "classifierType": "negative_classifier_mse",
+        "embeddingType": "TextualInversionEmbed",
+        "filePath": ".//0_bastard//XL//negativeXL_D.safetensors"
+      },
+      {
+        "name": "unaestheticXLv31",
+        "priority": 2,
+        "classifierType": "negative_classifier_mse",
+        "embeddingType": "TextualInversionEmbed",
+        "filePath": ".//0_bastard//XL//unaestheticXLv31.safetensors"
+      }
+    ],
+    "embeddingTexts": [
+      {
+        "name": "Positive: 1",
+        "priority": 1,
+        "classifierType": "positive_classifier_mse",
+        "text": "UHD, (skin texture), high detail, photorealistic, (skin pores), RAW photo, (sharp focus), film grain, fine detail, texture, macro lens, HDR",
+        "multiToken": true
+      },
+      {
+        "name": "Positive: 2",
+        "priority": 1,
+        "classifierType": "positive_classifier_mse",
+        "text": "(RAW photo), (8K:1.2), sharp, highres, absurdres",
+        "multiToken": true
+      },
+      {
+        "name": "Positive: 3",
+        "priority": 1,
+        "classifierType": "negative_classifier_mse",
+        "text": "(ultra realistic professional photograph shot on nikon canon iphone)",
+        "multiToken": true
+      },
+      {
+        "name": "Negative: 1",
+        "priority": 1,
+        "classifierType": "negative_classifier_mse",
+        "text": "lowres, blurred, low detail, jpg artifacts, error, blurry, airbrushed, smooth, interlaced, painting, watermark, logo, signature, username, artist name, carpet",
+        "multiToken": true
+      },
+      {
+        "name": "Negative: 2",
+        "priority": 1,
+        "classifierType": "negative_classifier_mse",
+        "text": "watermark, logo, signature, username, artist name, lowres, grainy, cartoon, doll, plastic, worst quality, sketch, anime, painting, unrealistic, blurry, jpg artifacts, compression artifacts",
+        "multiToken": true
+      },
+      {
+        "name": "Negative: 3",
+        "priority": 1,
+        "classifierType": "negative_classifier_mse",
+        "text": "conjoined fingers, deformed fingers, ugly eyes, small iris, dull eyes, flat irises, poorly drawn eyes, imperfect eyes, skewed eyes, unnatural face, unnatural body, error",
+        "multiToken": true
+      },
+      {
+        "name": "Negative: 4",
+        "priority": 1,
+        "classifierType": "negative_classifier_mse",
+        "text": "watermark, website address, url, logo, artist_name",
+        "multiToken": true
+      }
+    ]
+  }
+  

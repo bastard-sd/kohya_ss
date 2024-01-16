@@ -47,15 +47,14 @@ from library.custom_train_functions import (
     apply_debiased_estimation,
 )
 
-import signal
 import sys
 from sdxl_gen_img import get_weighted_text_embeddings as get_weighted_sdxl_text_embeddings
-
+from discriminator import DiscriminatorManager
 
 class NetworkTrainer:
     def __init__(self):
         self.vae_scale_factor = 0.18215
-        self.is_sdxl = True
+        self.is_sdxl = False
 
     # TODO 他のスクリプトと共通化する
     def generate_step_logs(
@@ -204,8 +203,8 @@ class NetworkTrainer:
             # use arbitrary dataset class
             train_dataset_group = train_util.load_arbitrary_dataset(args, tokenizer)
 
-        self.current_epoch = current_epoch = Value("i", 0)
-        self.current_step = current_step = Value("i", 0)
+        current_epoch = Value("i", 0)
+        current_step = Value("i", 0)
         ds_for_collator = train_dataset_group if args.max_data_loader_n_workers == 0 else None
         collator = train_util.collator_class(current_epoch, current_step, ds_for_collator)
 
@@ -227,7 +226,7 @@ class NetworkTrainer:
 
         # acceleratorを準備する
         print("preparing accelerator")
-        self.accelerator = accelerator = train_util.prepare_accelerator(args)
+        accelerator = train_util.prepare_accelerator(args)
         is_main_process = accelerator.is_main_process
 
         # mixed precisionに対応した型を用意しておき適宜castする
@@ -236,10 +235,22 @@ class NetworkTrainer:
 
         # モデルを読み込む
         model_version, text_encoder, vae, unet = self.load_target_model(args, weight_dtype, accelerator)
-        self.vae = vae
-        
+
         # text_encoder is List[CLIPTextModel] or CLIPTextModel
         text_encoders = text_encoder if isinstance(text_encoder, list) else [text_encoder]
+
+        noise_scheduler = DDPMScheduler(
+            beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, clip_sample=False
+        )
+        prepare_scheduler_for_custom_training(noise_scheduler, accelerator.device)
+        custom_train_functions.fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler)
+        args.zero_terminal_snr = True
+
+        discriminator_config_json = os.path.join(args.train_data_dir, 'discriminator_config.json') # './/discriminator_config.json'
+        discriminator_manager = DiscriminatorManager(discriminator_config_json, accelerator.device, noise_scheduler, tokenizers, text_encoders, self.is_sdxl, save_image_steps=100, print_diagnostics=True)
+        vae = discriminator_manager.vae_model
+        print(f"vae_scale_factor: {2 ** (len(vae.config.block_out_channels) - 1)}")
+        #vae = AutoencoderTiny.from_pretrained("madebyollin/taesdxl", torch_dtype=torch.float32)
 
         # モデルに xformers とか memory efficient attention を組み込む
         train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers, args.sdpa)
@@ -297,7 +308,6 @@ class NetworkTrainer:
         # if a new network is added in future, add if ~ then blocks for each network (;'∀')
         if args.dim_from_weights:
             network, _ = network_module.create_network_from_weights(1, args.network_weights, vae, text_encoder, unet, **net_kwargs)
-            self.network = network
         else:
             if "dropout" not in net_kwargs:
                 # workaround for LyCORIS (;^ω^)
@@ -313,7 +323,6 @@ class NetworkTrainer:
                 neuron_dropout=args.network_dropout,
                 **net_kwargs,
             )
-            self.network = network
         if network is None:
             return
 
@@ -680,17 +689,7 @@ class NetworkTrainer:
                 minimum_metadata[key] = metadata[key]
 
         progress_bar = tqdm(range(args.max_train_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
-        self.global_step = global_step = 0
-
-        noise_scheduler = DDPMScheduler(
-            beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, clip_sample=False
-        )
-        prepare_scheduler_for_custom_training(noise_scheduler, accelerator.device)
-        
-        # Zero Terminal SNR, always set it on.
-        # if args.zero_terminal_snr:
-        #     custom_train_functions.fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler)
-        custom_train_functions.fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler)
+        global_step = 0
 
         if accelerator.is_main_process:
             init_kwargs = {}
@@ -733,791 +732,26 @@ class NetworkTrainer:
                 accelerator.print(f"removing old checkpoint: {old_ckpt_file}")
                 os.remove(old_ckpt_file)
 
-        # ##########################################################################################
-        # ##########################################################################################
-        # ##########################################################################################
-        # refactor into its own file.
+        use_timestep_window = True
         
+        if use_timestep_window:
+            losses = []
+            timestep_range = args.max_timestep - args.min_timestep
+            timestep_step = 5
+            min_loss = 0.35
+            max_loss = min_loss * 1.25
+            slide = 10000
+            slide_dir = 1
+            #args.min_timestep = 0 
+            #args.max_timestep = timestep_range
+            
+            
+        torch.autograd.set_detect_anomaly(True)
         
-        # for network_module in network.text_encoder_loras:
-        #     random_dropout = random.uniform(0, args.network_dropout)
-        #     network_module.dropout = random_dropout
-
-        # Load the ViT model
-        import clip
-        import torch.nn as nn
-        import pytorch_lightning as pl
-        import safetensors.torch
-        import re
-        from typing import Any, List, NamedTuple, Optional, Tuple, Union, Callable
-        from transformers import CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPImageProcessor
-
-        from library import sdxl_model_util
-        from PIL import Image
-        from torchvision.transforms.functional import to_pil_image
-        import torchvision
-        from typing import Tuple, List
-
-        from diffusers import AutoencoderTiny
-
-
-        token_replacements_list = []
-        for _ in range(len(text_encoders)):
-            token_replacements_list.append({})
-         
-            
-        def add_token_replacement(token_replacements_list, text_encoder_index, target_token_id, rep_token_ids):
-            token_replacements_list[text_encoder_index][target_token_id] = rep_token_ids
-
-
-        def get_token_replacer(tokenizers, tokenizer, token_replacements_list=[]):
-            tokenizer_index = tokenizers.index(tokenizer)
-            token_replacements = []
-            if len(token_replacements_list) > 0:
-                token_replacements = token_replacements_list[tokenizer_index]
-
-            def replace_tokens(tokens):
-                # print("replace_tokens", tokens, "=>", token_replacements)
-                if isinstance(tokens, torch.Tensor):
-                    tokens = tokens.tolist()
-
-                new_tokens = []
-                for token in tokens:
-                    if token in token_replacements:
-                        replacement = token_replacements[token]
-                        new_tokens.extend(replacement)
-                    else:
-                        new_tokens.append(token)
-                return new_tokens
-
-            return replace_tokens
-
-
-        def positive_classifier_mse(original_scores, denoised_scores, power=2, min_original_score=-100, negative_loss_scale=0.5):
-
-            # Compute the positive loss term only where the mask is True
-            positive_loss = torch.maximum(torch.zeros_like(original_scores), original_scores - denoised_scores) ** power
-            negative_loss = torch.maximum(torch.zeros_like(original_scores), denoised_scores - original_scores) ** power
-            
-            # Combine the loss terms, applying the negative_loss_scale only to the negative loss
-            loss = positive_loss - negative_loss_scale * negative_loss
-
-            # Only apply loss if it met a minimum criteria (basically avoid applying classifier where it doesnt apply)
-            loss = torch.where(original_scores > min_original_score, loss, torch.zeros_like(loss))
-            
-            return loss
-
-        # For BAD scores we simply swap the order
-        def negative_classifier_mse(original_scores, denoised_scores):
-            return positive_classifier_mse(denoised_scores, original_scores)     
-
-
-        class TextualInversionEmbed():
-            def __init__(self, embed_path):
-                embed = self._load_embedding(embed_path)
-                self.embedding = self._process_embedding(embed)
-
-            def _load_embedding(self, embed_path):
-                if embed_path.endswith('.safetensors'):
-                    return safetensors.torch.load_file(embed_path, device="cpu")
-                else:  # Assuming .pt/.bin file
-                    return torch.load(embed_path, map_location="cpu")
-
-            def _process_embedding(self, embed):
-                if 'string_to_param' in embed:
-                    embed_out = next(iter(embed['string_to_param'].values()))
-                elif isinstance(embed, list):
-                    embed_out = self._aggregate_list_embeddings(embed)
-                else:
-                    embed_out = next(iter(embed.values()))
-                    
-                # normalized_embed = embed_out / embed_out.norm(dim=-1, keepdim=True)
-                # self._check_embedding_dimension(embed_out)
-                aggregated_tensor = embed_out.squeeze().mean()
-                return aggregated_tensor
-
-            def _aggregate_list_embeddings(self, embed_list):
-                out_list = [t.reshape(-1, t.shape[-1]) for embed_dict in embed_list 
-                            for t in embed_dict.values() if t.shape[-1] == 768]
-                return torch.cat(out_list, dim=0)
-
-            def _check_embedding_dimension(self, embed_tensor):
-                expected_emb_dim = text_encoders[0].get_input_embeddings().weight.shape[-1]
-                if expected_emb_dim != embed_tensor.shape[-1]:
-                    raise ValueError(f"Loaded embeddings are of incorrect shape. Expected {expected_emb_dim}, but are {embed_tensor.shape[-1]}")
-
-
-        class AestheticModelBase(pl.LightningModule):
-            def __init__(self):
-                super(AestheticModelBase, self).__init__()  
-                self.input_size = 768
-                self.layers = None  # To be defined in subclasses
-
-            def load_model(self, model_path):
-                state_dict = torch.load(model_path)
-                self.load_state_dict(state_dict)
-                self.eval()
-                self.half()
-
-            def forward(self, x):
-                if self.layers is None:
-                    raise NotImplementedError("Layers must be defined in subclass")
-                return self.layers(x)
-
-
-        class AestheticModelReLU(AestheticModelBase):
-            def __init__(self, model_path):
-                super(AestheticModelReLU, self).__init__()
-                self.layers = nn.Sequential(
-                    nn.Linear(self.input_size, 1024),
-                    nn.ReLU(),
-                    nn.Dropout(0.3),
-                    nn.Linear(1024, 128),  
-                    nn.ReLU(),
-                    nn.Dropout(0.2),
-                    nn.Linear(128, 64),
-                    nn.ReLU(),
-                    nn.Dropout(0.1),
-                    nn.Linear(64, 16),
-                    nn.Dropout(0.01),
-                    nn.Linear(16, 1),
-                )
-                self.load_model(model_path)
-
-
-        class AestheticModelLinear(AestheticModelBase):
-            def __init__(self, model_path):
-                super(AestheticModelLinear, self).__init__()
-                self.layers = nn.Sequential(
-                    nn.Linear(self.input_size, 1024),
-                    nn.Dropout(0.3),
-                    nn.Linear(1024, 128),  
-                    nn.Dropout(0.2),
-                    nn.Linear(128, 64),
-                    nn.Dropout(0.1),
-                    nn.Linear(64, 16),
-                    nn.Dropout(0.01),
-                    nn.Linear(16, 1),
-                )
-                self.load_model(model_path)
-
-
-        class BaseDiscriminator:
-            def __init__(self, manager, name, weight, loss_func, input_type='embedding'):
-                self.manager = manager
-                self.name = name
-                self.weight = weight
-                self.loss_func = loss_func
-                self.input_type = input_type
-                self.device = manager.device
-                #manager.add_discriminator(name, self)
-
-            def compute_loss(self, original_scores, denoised_scores):
-                return self.loss_func(original_scores, denoised_scores)
-
-
-        class BaseCosineSimilarityDiscriminator(BaseDiscriminator):
-            def __init__(self, manager, name, weight, loss_func):
-                super().__init__(manager, name, weight, loss_func)
-
-            def compute_scores(self, embeddings):
-                return 5 * torch.nn.functional.cosine_similarity(embeddings, self.embedding, dim=-1)
-
-
-        # TODO: This needs to work with both sd15 and sdxl
-        class TextDiscriminator(BaseCosineSimilarityDiscriminator):
-            def __init__(self, manager, name, weight, loss_func, prompt):
-                super().__init__(manager, name, weight, loss_func)
-                self.embedding = self._get_text_embedding(prompt).to(manager.device)
-
-            def _get_text_embedding(self, prompt):
-                clip_model, _ = self.manager.vit_model
-                text_input = clip.tokenize(prompt).to(self.device)
-                with torch.no_grad():
-                    text_embedding = clip_model.encode_text(text_input)
-                return text_embedding / text_embedding.norm(dim=-1, keepdim=True)
-
-
-        class PromptDiscriminator(BaseCosineSimilarityDiscriminator):
-            def __init__(self, manager, name, weight, loss_func, prompt):
-                super().__init__(manager, name, weight, loss_func)
-                self.embedding = self._get_weighted_text_embeddings(
-                    manager.is_sdxl,
-                    tokenizers=manager.tokenizers,
-                    text_encoders=manager.text_encoders,
-                    prompt=prompt,
-                    device=manager.device
-                ).to(manager.device)
-
-            def _get_weighted_text_embeddings(
-                    self,
-                    is_sdxl,
-                    tokenizers=[],
-                    text_encoders=[],
-                    prompt='',
-                    token_replacements_list=[],
-                    max_embeddings_multiples=1,
-                    clip_skip=1,
-                    device='cpu',
-                    **kwargs,
-                ):
-                if is_sdxl:
-                    tes_text_embs = []
-                    for tokenizer, text_encoder in zip(tokenizers, text_encoders):
-                        token_replacer = get_token_replacer(tokenizers, tokenizer, token_replacements_list)
-                        text_embeddings, _, _, _, _ = get_weighted_sdxl_text_embeddings(
-                            tokenizer,
-                            text_encoder,
-                            prompt=prompt,
-                            max_embeddings_multiples=max_embeddings_multiples,
-                            clip_skip=clip_skip,
-                            token_replacer=token_replacer,
-                            device=device,
-                            **kwargs,
-                        )
-                        tes_text_embs.append(text_embeddings)
-
-                    # concat text encoder outputs
-                    text_embeddings = tes_text_embs[0]
-                    for i in range(1, len(tes_text_embs)):
-                        text_embeddings = torch.cat([text_embeddings, tes_text_embs[i]], dim=2)  # n,77,2048
-
-                else:
-                    text_embeddings = get_weighted_text_embeddings(
-                        tokenizers[0],
-                        text_encoders[0],
-                        prompt,
-                        device,
-                        max_embeddings_multiples=max_embeddings_multiples, # 1 * 75 token max length, I think 1 is necessary for compatibility with loaded embeddings.
-                        clip_skip=clip_skip, # Clip Skip
-                    )
-                    
-                processed_embedding = text_embeddings[0].squeeze().mean()
-                return processed_embedding
-            
-            
-        class PretrainedEmbeddingDiscriminator(BaseCosineSimilarityDiscriminator):
-            def __init__(self, manager, name, weight, loss_func, model):
-                super().__init__(manager, name, weight, loss_func)
-                self.embedding = model.embedding.to(manager.device)
-
-
-        class AestheticDiscriminator(BaseDiscriminator):
-            def __init__(self, manager, name, weight, loss_func, model):
-                super().__init__(manager, name, weight, loss_func)
-                self.model = model.to(self.device)
-
-            def compute_scores(self, embeddings):
-                return self.model(embeddings).squeeze() / 10
-
-        class ClassifierDiscriminator(BaseDiscriminator):
-            def __init__(self, manager, name, weight, loss_func, model):
-                super().__init__(manager, name, weight, loss_func)
-                self.model = model.to(self.device)
-
-            def compute_scores(self, embeddings):
-                return self.model(embeddings).squeeze()
-
-        class FunctionDiscriminator(BaseDiscriminator):
-            def __init__(self, manager, name, weight, loss_func, score_func, input_type='noise'):
-                super().__init__(manager, name, weight, loss_func, input_type=input_type)
-                self.compute_scores = score_func
-
-        class DiscriminatorManager:
-            def __init__(self, device, noise_scheduler, tokenizers, text_encoders, is_sdxl, save_image_steps=10, print_diagnnostics=False):
-                self.discriminators = {}
-                self.device = device
-                self.noise_scheduler = noise_scheduler
-                self.tokenizers = tokenizers
-                self.text_encoders = text_encoders
-                self.vit_model = clip.load("ViT-L/14", device=device)
-                self.is_sdxl = is_sdxl
-                self.print_diagnnostics = print_diagnnostics
-                self.save_image_steps = save_image_steps
-                if is_sdxl:
-                    print('VAE = SDXL')
-                    self.vae_model = AutoencoderTiny.from_pretrained("madebyollin/taesdxl", torch_dtype=torch.float16).to(device)
-                else:
-                    print('VAE = SD15')
-                    self.vae_model = AutoencoderTiny.from_pretrained("madebyollin/taesd", torch_dtype=torch.float16).to(device)
-
-            def add_aesthetic(self, name, weight, loss_func, model):
-                self.discriminators[name] = AestheticDiscriminator(self, name, weight, loss_func, model)
-
-            def add_classifier(self, name, weight, loss_func, model):
-                self.discriminators[name] = ClassifierDiscriminator(self, name, weight, loss_func, model)
-
-            def add_embedding_text(self, name, weight, loss_func, prompt, multi_token=False):
-                if multi_token:
-                    self.discriminators[name] = PromptDiscriminator(self, name, weight, loss_func, prompt)
-                else:
-                    self.discriminators[name] = TextDiscriminator(self, name, weight, loss_func, prompt)
-
-            def add_embedding_pretrained(self, name, weight, loss_func, embed_path):
-                self.discriminators[name] = PretrainedEmbeddingDiscriminator(self, name, weight, loss_func, embed_path)
-
-            def add_function(self, name, weight, loss_func, score_func, input_type):
-                self.discriminators[name] = FunctionDiscriminator(self, name, weight, loss_func, score_func, input_type)
-
-            def remove_noise(
-                #noise_scheduler,
-                self,
-                noisy_samples: torch.FloatTensor,
-                noise: torch.FloatTensor,
-                timesteps: torch.IntTensor,
-            ) -> torch.FloatTensor:
-                noise_scheduler = self.noise_scheduler
-                # Make sure alphas_cumprod and timestep have the same device and dtype as noisy_samples
-                alphas_cumprod = noise_scheduler.alphas_cumprod.to(device=noisy_samples.device, dtype=noisy_samples.dtype)
-                timesteps = timesteps.to(noisy_samples.device)
-
-                sqrt_alpha_prod = alphas_cumprod[timesteps] ** 0.5
-                sqrt_alpha_prod = sqrt_alpha_prod.flatten()
-                while len(sqrt_alpha_prod.shape) < len(noisy_samples.shape):
-                    sqrt_alpha_prod = sqrt_alpha_prod.unsqueeze(-1)
-
-                sqrt_one_minus_alpha_prod = (1 - alphas_cumprod[timesteps]) ** 0.5
-                sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.flatten()
-                while len(sqrt_one_minus_alpha_prod.shape) < len(noisy_samples.shape):
-                    sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.unsqueeze(-1)
-
-                # Reverse the noise addition process
-                original_samples = (noisy_samples - sqrt_one_minus_alpha_prod * noise) / sqrt_alpha_prod
-                return original_samples
-
-            def scale_losses(self, loss, timesteps):
-                # Since we've converted from noise back to image space, we should use inverse of debiased estimation 
-                # to obtain a uniform loss scale across timesteps
-
-                ones = torch.ones_like(timesteps)
-                scaling_factors = apply_debiased_estimation(ones, timesteps, self.noise_scheduler)
-                scaling_factors = 1.0 / (scaling_factors + 1e-7)
-                scaling_factors *= ones + torch.abs(timesteps - 500) / 500
-
-
-                # Step 4: Multiply the original losses by the inverse scaling factor
-                return loss * scaling_factors
-
-            def apply_discriminator_losses(self, base_loss, timesteps, original_latents, noise, noisy_latents, noise_pred):
-                
-                original = {}
-                denoised = {}
-                
-                original["noise"] = noise
-                denoised["noise"] = noise_pred
-
-                original["latent"] = original_latents
-                denoised["latent"] = self.remove_noise(noisy_latents, noise_pred, timesteps)
-
-                # Decode latents and get images, embeddings
-                self._process_batch(original, denoised)
-  
-                # Apply each discriminator
-                modified_loss = 0
-                for discriminator_name, discriminator in self.discriminators.items():
-                    original_scores = discriminator.compute_scores(original[discriminator.input_type])
-                    denoised_scores = discriminator.compute_scores(denoised[discriminator.input_type])
-
-                    discriminator_loss = discriminator.loss_func(original_scores, denoised_scores)
-                    
-                    if discriminator.input_type != 'noise':
-                        discriminator_loss = self.scale_losses(discriminator_loss, timesteps)
-                    
-                    discriminator_loss *= discriminator.weight
-
-                    # Try to normalize loss scale across different timesteps
-                    #discriminator_loss = scale_v_prediction_loss_like_noise_prediction(discriminator_loss, timesteps, noise_scheduler)
-                    if self.print_diagnnostics:
-                        self._print_diagnostics(discriminator_name, timesteps, original_scores, denoised_scores, discriminator_loss, base_loss)
-                        
-                    modified_loss += discriminator_loss
-
-                return base_loss + modified_loss
-
-            # Inside DiscriminatorManager
-            def _process_batch(self, original, denoised):
-                original["decode"], denoised["decode"] = self._decode_latents(original["latent"], denoised["latent"])
-                original["image"], denoised["image"] = self._get_PIL_images(original["decode"], denoised["decode"])
-                self._save_image_pairs(original["image"], denoised["image"])
-                original["embedding"], denoised["embedding"] = self._get_image_embeddings(original["image"], denoised["image"])
-                original["decode"].cpu()
-                denoised["decode"].cpu()
-                
-
-            def _decode_latents(self, 
-                                original_latents: torch.Tensor, 
-                                denoised_latents: torch.Tensor
-                                ) -> Tuple[torch.Tensor, torch.Tensor]:
-                """
-                Decodes latent tensors into image tensors.
-
-                Parameters:
-                original_latents (torch.Tensor): The original latent tensors.
-                denoised_latents (torch.Tensor): The denoised latent tensors.
-
-                Returns:
-                Tuple[torch.Tensor, torch.Tensor]: Tensors representing the decoded original and denoised images.
-                """
-                def decode_latents_single(latents):
-                    with torch.no_grad():
-                        decodes = []
-                        for i in range(latents.size(0)):
-                            latent = latents[i].unsqueeze(0).to(self.vae_model.dtype)
-                            decode = self.vae_model.decode(latent).sample
-                            decodes.append(decode)
-
-                        return torch.cat(decodes, dim=0)
-                return decode_latents_single(original_latents), decode_latents_single(denoised_latents)
-
-            def _get_PIL_images(self, 
-                                original_decodes: torch.Tensor, 
-                                denoised_decodes: torch.Tensor
-                                ) -> Tuple[List[Image.Image], List[Image.Image]]:
-                """
-                Converts decoded images to a list of PIL images.
-
-                Parameters:
-                original_decodes (torch.Tensor): Decoded original images.
-                denoised_decodes (torch.Tensor): Decoded denoised images.
-
-                Returns:
-                Tuple[List[Image.Image], List[Image.Image]]: Lists of PIL images for original and denoised images.
-                """
-                def to_PIL(images):
-                    with torch.no_grad():
-                        # Rescale from [-1, 1] to [0, 1]
-                        images = (images / 2 + 0.5).clamp(0, 1)
-                        # Convert to 0-255 range and change layout to [batch, height, width, channels]
-                        images = images.cpu().permute(0, 2, 3, 1).float().numpy()
-                        images = np.nan_to_num(images, nan=0.0, posinf=0.0, neginf=0.0)
-                        images = (images * 255).clip(0, 255).round().astype("uint8")
-                        return [Image.fromarray(im) for im in images]
-
-                return to_PIL(original_decodes), to_PIL(denoised_decodes)
-
-
-
-            def _get_image_embeddings(self, 
-                                      original_images: torch.Tensor, 
-                                      denoised_images: torch.Tensor
-                                      ) -> Tuple[torch.Tensor, torch.Tensor]:
-                """
-                Generates embeddings for images using a CLIP model.
-
-                Parameters:
-                original_images (Tuple[List[Image.Image]): List of original images in PIL format.
-                denoised_images (Tuple[List[Image.Image]): List of denoised images in PIL format.
-
-                Returns:
-                Tuple[torch.Tensor, torch.Tensor]: Embeddings for original and denoised images.
-                """
-                clip_model, preprocess = self.vit_model
-
-                def get_embeddings(images):
-                    with torch.no_grad():
-                        preprocessed_images = [preprocess(img).unsqueeze(0) for img in images]
-                        preproc_images_batch = torch.cat(preprocessed_images, dim=0).to(self.device)
-                        embeddings = clip_model.encode_image(preproc_images_batch)
-                        return embeddings / embeddings.norm(dim=-1, keepdim=True)
-
-                return get_embeddings(original_images), get_embeddings(denoised_images)
-
-
-            def _save_image_pairs(self, original_images, denoised_images):
-
-                def _save_image_pair(index, original_pil, denoised_pil, save_dir, step, timesteps):
-                    combined_width = original_pil.width + denoised_pil.width
-                    combined_height = max(original_pil.height, denoised_pil.height)
-                    combined_image = Image.new('RGB', (combined_width, combined_height))
-                    combined_image.paste(original_pil, (0, 0))
-                    combined_image.paste(denoised_pil, (original_pil.width, 0))
-
-                    filename = f"{args.output_name}_{step}_b{index}_ts{timesteps[index].item()}.jpg"
-                    combined_image.save(os.path.join(save_dir, filename))
-
-                from threading import Thread
-                if step % self.save_image_steps != 0:
-                    return
-
-                save_dir = os.path.join(args.output_dir, "sample_discriminator")
-                if not os.path.exists(save_dir):
-                    os.makedirs(save_dir, exist_ok=True)
-
-                for i in range(len(original_images)):
-                    thread = Thread(target=_save_image_pair, args=(i, original_images[i], denoised_images[i], save_dir, step, timesteps))
-                    thread.daemon = True  # Set thread as daemon
-                    thread.start()
-
-
-            def _print_diagnostics(self, discriminator_name, timesteps, original_scores, denoised_scores, discriminator_loss, base_loss):
-                with torch.no_grad():
-                    if denoised_scores.ndim == 0:
-                        print(f"\n{discriminator_name} Scores and Losses:")
-                        print(f"{'Index':<6} {'Original Score':<15} {'Denoised Score':<15} {'Discriminator Loss':<20} {'Latent Loss':<15}")
-                        print(f"{'All':<6} {original_scores.item():<15.2f} {denoised_scores.item():<15.2f} {discriminator_loss.item():<20.2f} {base_loss.item():<15.2f}")
-                    else:
-                        original_scores_np = original_scores.cpu().numpy()
-                        denoised_scores_np = denoised_scores.cpu().numpy()
-                        discriminator_loss_np = discriminator_loss.cpu().numpy()
-                        base_loss_np = base_loss.cpu().numpy()
-
-                        print(f"\n{discriminator_name} Scores and Losses:")
-                        for i in range(len(denoised_scores_np)):
-                            print(f"{i:<6} {original_scores_np[i]:<15.2f} {denoised_scores_np[i]:<15.2f} {discriminator_loss_np[i]:<20.2f} {base_loss_np[i]:<15.2f}")
-
-        import numpy as np
-
-        #from skimage.feature import greycomatrix, greycoprops
-        #from skimage.feature import local_binary_pattern
-        class NoiseAnalysis:
-                    
-            @staticmethod
-            def noise(pil_images):
-                """
-                Computes the noise score for a batch of PIL images.
-
-                Parameters:
-                pil_images (List[Image.Image]): List of PIL images.
-
-                Returns:
-                torch.Tensor: Tensor of noise scores for each image in the batch.
-                """
-                noise_scores = []
-
-                with torch.no_grad():
-                    for img in pil_images:
-                        # Convert PIL image to grayscale and to a numpy array
-                        gray_img = np.array(img.convert("L"))
-
-                        # Calculate the standard deviation (noise)
-                        noise_score = np.std(gray_img) / 64
-
-                        noise_scores.append(noise_score)
-
-                return torch.tensor(noise_scores, device=accelerator.device) 
-
-
-            @staticmethod
-            def skewness(tensor):
-                skewnesses = [torch.skew(t.view(-1).float()).cpu().item() for t in tensor]
-                return 10 * torch.tensor(skewnesses, device=tensor.device)
-
-            @staticmethod
-            def kurtosis(tensor):
-                # Ensure tensor is in float format for mean and variance computations
-                tensor = tensor.float()
-                
-                # Initialize a list to store kurtosis for each item in the batch
-                kurtoses = []
-                
-                # Calculate kurtosis for each item in the batch
-                for i in range(tensor.size(0)):  # Iterate over the batch dimension
-                    # Select the i-th batch item (all elements along all dimensions for this item)
-                    t = tensor[i].view(-1)
-                    
-                    # Calculate the mean and standard deviation of the flattened tensor
-                    mean = t.mean()
-                    std = t.std(unbiased=True)
-                    
-                    # Compute the fourth moment (the numerator of the kurtosis formula)
-                    fourth_moment = torch.mean((t - mean) ** 4)
-                    
-                    # Compute the kurtosis for this item
-                    kurt = fourth_moment / (std ** 4)
-                    
-                    # Adjust for excess kurtosis
-                    excess_kurtosis = kurt - 3
-                    
-                    # Store the excess kurtosis in the list
-                    kurtoses.append(excess_kurtosis)
-                
-                # Convert the list of kurtoses to a tensor and scale it (if necessary, as per your original code)
-                kurtoses_tensor = torch.tensor(kurtoses, device=tensor.device)
-                
-                return kurtoses_tensor
-
-            @staticmethod
-            def entropy(tensor):
-                entropies = []
-                with torch.no_grad():
-                    for i in range(tensor.shape[0]):  # Iterate over each item in the batch
-                        # Compute the standard deviation of the flattened tensor
-                        std_dev = tensor[i].view(-1).std().cpu().item()
-                        
-                        # Calculate the differential entropy for a normal distribution
-                        entropy = 0.5 * np.log2(2 * np.pi * np.e * std_dev**2)
-                        entropies.append(entropy)
-                    return torch.tensor(entropies, device=tensor.device)
-
-            @staticmethod
-            def sharpness_tensor(images_tensor):
-                # Check if the tensor is already 4D: [batch_size, channels, height, width]
-                if images_tensor.ndim != 4:
-                    raise ValueError("Input tensor must be 4-dimensional [batch_size, channels, height, width]")
-
-                # Convert images to grayscale if they have 3 channels (RGB)
-                if images_tensor.shape[1] == 3:
-                    # Simple averaging over the RGB channels to convert to grayscale
-                    images_tensor = images_tensor.mean(dim=1, keepdim=True)
-                
-                # # Normalize images to [0, 1] range
-                # images_tensor = images_tensor.to(torch.float32) / 255.0
-
-                # Define a Laplacian kernel
-                laplacian_kernel = torch.tensor([[-1, -1, -1],
-                                                 [-1,  8, -1],
-                                                 [-1, -1, -1]], dtype=images_tensor.dtype, device=images_tensor.device)
-                laplacian_kernel = laplacian_kernel.view(1, 1, 3, 3)
-
-                # Apply the Laplacian filter
-                laplacian = torch.nn.functional.conv2d(images_tensor, laplacian_kernel, padding=1)
-
-                # Compute the standard deviation for each image
-                sharpness_values = laplacian.view(laplacian.shape[0], -1).std(dim=1) * 2
-
-                return sharpness_values
-
-            @staticmethod
-            def sharpness_PIL(pil_images):
-                sharpness_scores = []
-
-                for img in pil_images:
-                    # Convert PIL image to grayscale
-                    gray_img = img.convert('L')
-
-                    # Convert PIL image to NumPy array
-                    np_img = np.array(gray_img)
-
-                    # Apply Laplacian operator
-                    laplacian = cv2.Laplacian(np_img, cv2.CV_64F)
-
-                    # Compute the standard deviation (sharpness score)
-                    sharpness = laplacian.std()
-                    sharpness_scores.append(sharpness)
-
-                # Convert list of sharpness scores to a tensor
-                sharpness_tensor = torch.tensor(sharpness_scores, dtype=torch.float32)
-
-                return sharpness_tensor
-        
-        def load_json_file(file_path):
-            with open(file_path, 'r') as file:
-                return json.load(file)
-                 
-        def classifier_lambda(obj):
-            if obj["classifierType"] == "custom":
-                match = re.search(r'[-+]?\d*\.\d+|\d+$', obj["classifierExpression"])
-                # Use regular expression to find the last numeric sequence (integer or float)
-                if not match:
-                    raise ValueError(f"Invalid classifierExpression: {obj['classifierExpression']}")
-                elif "negative_loss_scale" in obj["classifierExpression"]:
-                    scale_value = float(match.group())
-                    classifier_lambda = lambda x, y: positive_classifier_mse(x, y, negative_loss_scale=scale_value)
-                elif "min_original_score" in obj["classifierExpression"]:
-                    score_value = int(match.group())
-                    classifier_lambda = lambda x, y: positive_classifier_mse(x, y, min_original_score=score_value)
-                elif "power" in obj["classifierExpression"]:
-                    power_value = int(match.group())
-                    classifier_lambda = lambda x, y: positive_classifier_mse(x, y, power=power_value)
-            else:
-                classifier_lambda = positive_classifier_mse if obj["classifierType"] == 'positive_classifier_mse' else negative_classifier_mse
-            
-            return classifier_lambda
-        
-        def add_aesthetics(discriminator_manager, aesthetics):
-            for aesthetic in aesthetics:
-                model_type = AestheticModelLinear if aesthetic["modelType"] == 'AestheticModelLinear' else AestheticModelReLU
-                discriminator_manager.add_aesthetic(
-                    aesthetic["name"],
-                    aesthetic["priority"],
-                    classifier_lambda(aesthetic),
-                    model_type(aesthetic["filePath"])
-                )
-     
-        def add_functions(discriminator_manager, functions):
-            for function in functions:
-                if "NoiseAnalysis" in function["functionType"]:
-                    if "sharpness_tensor" in function["functionType"]:
-                        function_lambda = NoiseAnalysis.sharpness_tensor
-                    elif "entropy" in function["functionType"]:
-                        function_lambda = NoiseAnalysis.entropy
-                    elif "kurtosis" in function["functionType"]:
-                        function_lambda = NoiseAnalysis.kurtosis
-                elif "custom" in function["functionType"]:
-                    if "Entropy - Kurtosis" in function["functionExpression"]:
-                        function_lambda = lambda x: NoiseAnalysis.entropy(x) - NoiseAnalysis.kurtosis(x)
-                
-                discriminator_manager.add_function(
-                    function["name"],
-                    function["priority"],
-                    classifier_lambda(function),
-                    function_lambda,
-                    function.get("additionalParameter", None)  # Optional parameter
-                )
-                
-        def add_embeddings(discriminator_manager, embeddings):
-            for embedding in embeddings:
-                embedding_model = None
-                if "TextualInversionEmbed" in embedding["embeddingType"]:
-                    embedding_model = TextualInversionEmbed(embedding["filePath"])
-                discriminator_manager.add_embedding_pretrained(
-                    embedding["name"],
-                    embedding["priority"],
-                    classifier_lambda(embedding),
-                    embedding_model
-                )
-                
-        def add_embedding_texts(discriminator_manager, embedding_texts):
-            for embedding_text in embedding_texts:
-                discriminator_manager.add_embedding_text(
-                    embedding_text["name"],
-                    embedding_text["priority"],
-                    classifier_lambda(embedding_text),
-                    embedding_text["text"],
-                    multi_token=embedding_text["multiToken"] if "multiToken" in embedding_text else False
-                )
-
-
-        # instead of passin gloss func direction  you can pass a lambda to it
-        # to call it with optional arguments
-        # so if you set negative_loss_scale to 0
-        # you dont reward it for doing better than the original image
-        # if you set it to -1
-        # you punish any deviation from original score
-        # positive or negative
-        # if you set it to 0.5 (default)
-        # then improvements over original image get negative loss of half the MSE
-        
-        json_file_path = './/discriminator_config.json'
-        data = load_json_file(json_file_path)
-        discriminator_manager = DiscriminatorManager(accelerator.device, noise_scheduler, tokenizers, text_encoders, self.is_sdxl, save_image_steps=100, print_diagnnostics=True)
-
-        add_aesthetics(discriminator_manager, data["aesthetics"])
-        add_functions(discriminator_manager, data["functions"])
-        add_embeddings(discriminator_manager, data["embeddings"])
-        add_embedding_texts(discriminator_manager, data["embeddingTexts"])
-
-
-        # ##########################################################################################
-        # ##########################################################################################
-        # ##########################################################################################
         
         # For --sample_at_first
         args.sample_at_first = True
-        self.sample_images(accelerator, args, 0, 0, accelerator.device, vae, tokenizer, text_encoder, unet)
-
-        use_timestep_window = False
-        
-        losses = []
-        timestep_range = 10
-        min_loss = 0.35
-        max_loss = min_loss * 1.25
-
-        if use_timestep_window:
-            slide = 10000
-            slide_dir = 1
-            args.min_timestep = 0 
-            args.max_timestep = timestep_range
+        self.sample_images(accelerator, args, 0, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
 
         # training loop
         for epoch in range(num_train_epochs):
@@ -1596,8 +830,6 @@ class NetworkTrainer:
                     if args.debiased_estimation_loss:
                         loss = apply_debiased_estimation(loss, timesteps, noise_scheduler)
 
-                    ### discriminator_manager loss modification HERE
-
                     if len(discriminator_manager.discriminators) > 0:
                         #loss = apply_discriminator_losses(loss, noise_pred, target)
                         # if args.ip_noise_gamma:
@@ -1633,20 +865,20 @@ class NetworkTrainer:
                             noise,
                             # We will remove_noise from noisy_latents for comparing to latents
                             noisy_latents, 
-                            noise_pred,  
+                            noise_pred,
+                            step,
+                            args.output_name,
+                            args.output_dir
                         )
 
                         #loss = apply_discriminator_losses(loss, denoisepredd_noisy_latents, latents)
                         # This is the same as latents
                         #denoised_noisy_latents = remove_noise(noise_scheduler, noisy_latents, noise, timesteps)
 
-                    ### 
-
                     # Calculate the mean of the total loss
-                    loss = loss.mean()  # 平均なのでbatch_sizeで割る必要なし
+                    loss = loss.mean()
 
-                    accelerator.backward(loss, retain_graph=True)
-                    
+                    accelerator.backward(loss)
                     self.all_reduce_network(accelerator, network)  # sync DDP grad manually
                     if accelerator.sync_gradients and args.max_grad_norm != 0.0:
                         params_to_clip = accelerator.unwrap_model(network).get_trainable_params()
@@ -1660,25 +892,25 @@ class NetworkTrainer:
                         losses.append(min(loss, max_loss * max_loss/min_loss))
                         window_loss = sum(losses[-20:]) / len(losses[-20:])
                         if slide > 0:
-                            args.min_timestep = max(0,    args.min_timestep + slide_dir * timestep_range)
-                            args.max_timestep = min(1000, args.max_timestep + slide_dir * timestep_range)
+                            args.min_timestep = max(0,    args.min_timestep + slide_dir * timestep_step)
+                            args.max_timestep = min(1000, args.max_timestep + slide_dir * timestep_step)
                             if slide_dir == 0:
                                 slide_dir = 1 if args.min_timestep == 0 else -1
                             elif args.min_timestep == 0 or args.max_timestep == 1000:
                                 # ensure we stay at the ends an extra cycle as we bounce back
                                 slide_dir = 0
-                        elif step % 5 == 0:
-                            if window_loss < min_loss:
-                                args.max_timestep = min(1000, args.max_timestep + timestep_range)
-                                args.min_timestep = args.max_timestep - timestep_range
+                        # elif step % 5 == 0:
+                        #     if window_loss < min_loss:
+                        #         args.max_timestep = min(1000, args.max_timestep + timestep_step)
+                        #         args.min_timestep = args.max_timestep - timestep_step
                                 
-                            if window_loss > max_loss:
-                                args.max_timestep = 1000
-                                args.min_timestep = args.max_timestep - timestep_range
-                                slide = 40
+                        #     if window_loss > max_loss:
+                        #         args.max_timestep = 1000
+                        #         args.min_timestep = args.max_timestep - timestep_range
+                        #         slide = 40
 
-                                # args.min_timestep = max(0, args.min_timestep - timestep_range)
-                                # args.max_timestep = args.min_timestep + timestep_range
+                        #         # args.min_timestep = max(0, args.min_timestep - timestep_range)
+                        #         # args.max_timestep = args.min_timestep + timestep_range
 
                 if args.scale_weight_norms:
                     keys_scaled, mean_norm, maximum_norm = accelerator.unwrap_model(network).apply_max_norm_regularization(
@@ -1851,36 +1083,11 @@ def setup_parser() -> argparse.ArgumentParser:
     return parser
 
 
-
-
-def run_trainer(args, save_and_exit_event):
-    trainer = NetworkTrainer()
-    
-    def save_and_exit(signum, frame):
-        ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, trainer.global_step)
-        
-        trainer.save_model(
-            ckpt_name, trainer.accelerator.unwrap_model(trainer.network), trainer.global_step, trainer.current_epoch
-        );
-        train_util.save_and_remove_state_stepwise(args, trainer.accelerator, trainer.global_step)
-        print(f"Received signal {signum}, saving model and exiting.")
-        sys.exit(0)
-    
-    signal.signal(signal.SIGINT, save_and_exit)
-    signal.signal(signal.SIGTERM, save_and_exit)
-    
-    save_and_exit_event.wait()  # Wait for the event to be set
-    trainer.train(args)
-    
-
 if __name__ == "__main__":
     parser = setup_parser()
+
     args = parser.parse_args()
     args = train_util.read_config_from_file(args, parser)
 
-    # Create an event to signal when to save and exit
-    save_and_exit_event = multiprocessing.Event()
-
-    # Run the trainer in a separate process
-    trainer_process = multiprocessing.Process(target=run_trainer, args=(args, save_and_exit_event))
-    trainer_process.start()
+    trainer = NetworkTrainer()
+    trainer.train(args)
