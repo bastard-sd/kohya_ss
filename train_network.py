@@ -752,7 +752,7 @@ class NetworkTrainer:
         
         
         # For --sample_at_first
-        args.sample_at_first = True
+        # args.sample_at_first = True
         self.sample_images(accelerator, args, 0, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
 
         # training loop
