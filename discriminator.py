@@ -215,11 +215,11 @@ class TextDiscriminator(BaseCosineSimilarityDiscriminator):
         self.embedding = self._get_text_embedding(prompt).to(manager.device)
 
     def _get_text_embedding(self, prompt):
-        clip_model, _ = self.manager.vit_model
-        text_input = clip.tokenize(prompt).to(self.device)
         with torch.no_grad():
+            clip_model, _ = self.manager.vit_model
+            text_input = clip.tokenize(prompt).to(self.device)
             text_embedding = clip_model.encode_text(text_input)
-        return text_embedding / text_embedding.norm(dim=-1, keepdim=True)
+            return text_embedding / text_embedding.norm(dim=-1, keepdim=True)
 
 class PromptDiscriminator(BaseCosineSimilarityDiscriminator):
     def __init__(self, manager, name, weight, loss_func, prompt):
@@ -344,30 +344,6 @@ class FunctionDiscriminator(BaseDiscriminator):
 #from skimage.feature import local_binary_pattern
 class NoiseAnalysis:
             
-    @staticmethod
-    def noise(pil_images):
-        """
-        Computes the noise score for a batch of PIL images.
-
-        Parameters:
-        pil_images (List[Image.Image]): List of PIL images.
-
-        Returns:
-        torch.Tensor: Tensor of noise scores for each image in the batch.
-        """
-        noise_scores = []
-
-        with torch.no_grad():
-            for img in pil_images:
-                # Convert PIL image to grayscale and to a numpy array
-                gray_img = np.array(img.convert("L"))
-
-                # Calculate the standard deviation (noise)
-                noise_score = np.std(gray_img) / 64
-
-                noise_scores.append(noise_score)
-
-        return torch.tensor(noise_scores, device=accelerator.device) 
 
     @staticmethod
     def skewness(tensor):
@@ -404,19 +380,20 @@ class NoiseAnalysis:
         # Convert the list of skewnesses to a tensor and scale it (if necessary, as per your original code)
         skewnesses_tensor = torch.tensor(skewnesses, device=tensor.device)
 
-        def transform_skewness(skewness_tensor):
-            # Take the sign of each skewness value
-            signs = skewness_tensor.sign()
+        # def transform_skewness(skewness_tensor):
+        #     # Take the sign of each skewness value
+        #     signs = skewness_tensor.sign()
 
-            # Apply the cubic root transformation to the absolute values
-            transformed_skewness = torch.abs(skewness_tensor) ** (1/3)
+        #     # Apply the cubic root transformation to the absolute values
+        #     transformed_skewness = torch.abs(skewness_tensor) ** (1/3)
 
-            # Reapply the signs to preserve the direction of skewness
-            transformed_skewness *= signs
+        #     # Reapply the signs to preserve the direction of skewness
+        #     transformed_skewness *= signs
 
-            return transformed_skewness
+        #     return transformed_skewness
+        # skewnesses_tensor = transform_skewness(skewnesses_tensor)
 
-        return transform_skewness(skewnesses_tensor)
+        return skewnesses_tensor
 
     @staticmethod
     def kurtosis(tensor):
@@ -455,29 +432,46 @@ class NoiseAnalysis:
     @staticmethod
     def entropy(tensor):
         entropies = []
+        for i in range(tensor.shape[0]):  # Iterate over each item in the batch
+            # Compute the standard deviation of the flattened tensor
+            mean, std_dev = torch.mean(tensor[i].view(-1)), torch.std(tensor[i].view(-1))
+            # Calculate the differential entropy for a normal distribution
+            entropy = 0.5 * torch.log2(2 * np.pi * np.e * std_dev**2)
+            #std_dev = tensor[i].view(-1).std().cpu().item()
+            #entropy = 0.5 * np.log2(2 * np.pi * np.e * std_dev**2)
+            entropies.append(entropy)
+        return torch.tensor(entropies, device=tensor.device)
+
+    @staticmethod
+    def cross_entropy(tensor2, tensor1):
+        cross_entropies = []
         with torch.no_grad():
-            for i in range(tensor.shape[0]):  # Iterate over each item in the batch
-                # Compute the standard deviation of the flattened tensor
-                std_dev = tensor[i].view(-1).std().cpu().item()
+            for i in range(tensor1.shape[0]):  # Iterate over each item in the batch
+                # Compute mean and standard deviation of the flattened tensors
+                mean1, std_dev1 = torch.mean(tensor1[i].view(-1)), torch.std(tensor1[i].view(-1))
+                mean2, std_dev2 = torch.mean(tensor2[i].view(-1)), torch.std(tensor2[i].view(-1))
                 
-                # Calculate the differential entropy for a normal distribution
-                entropy = 0.5 * np.log2(2 * np.pi * np.e * std_dev**2)
-                entropies.append(entropy)
-            return torch.tensor(entropies, device=tensor.device)
+                # Calculate the differential entropy for the true distribution
+                #entropy1 = 0.5 * torch.log2(2 * np.pi * np.e * std_dev1**2)
+                #entropy2 = 0.5 * torch.log2(2 * np.pi * np.e * std_dev2**2)
+                
+                # Calculate the cross-entropy between the two distributions
+                kl_div = 0.5 * (torch.log2(std_dev2**2 / std_dev1**2) +
+                                (std_dev1**2 + (mean1 - mean2)**2) / std_dev2**2 -
+                                1)
+                #cross_entropy = entropy1 + kl_div - entropy2
+                #cross_entropies.append(cross_entropy.item())  # Convert to Python float for appending
+                cross_entropies.append(kl_div)
+                
+        return torch.tensor(cross_entropies, device=tensor1.device)
+
 
     @staticmethod
     def sharpness_tensor(images_tensor):
-        # Check if the tensor is already 4D: [batch_size, channels, height, width]
         if images_tensor.ndim != 4:
             raise ValueError("Input tensor must be 4-dimensional [batch_size, channels, height, width]")
 
-        # Convert images to grayscale if they have 3 channels (RGB)
-        if images_tensor.shape[1] == 3:
-            # Simple averaging over the RGB channels to convert to grayscale
-            images_tensor = images_tensor.mean(dim=1, keepdim=True)
-        
-        # # Normalize images to [0, 1] range
-        # images_tensor = images_tensor.to(torch.float32) / 255.0
+        num_channels = images_tensor.shape[1]
 
         # Define a Laplacian kernel
         laplacian_kernel = torch.tensor([[-1, -1, -1],
@@ -485,38 +479,28 @@ class NoiseAnalysis:
                                             [-1, -1, -1]], dtype=images_tensor.dtype, device=images_tensor.device)
         laplacian_kernel = laplacian_kernel.view(1, 1, 3, 3)
 
-        # Apply the Laplacian filter
-        laplacian = torch.nn.functional.conv2d(images_tensor, laplacian_kernel, padding=1)
+        sharpness_values_per_channel = []
 
-        # Compute the standard deviation for each image
-        sharpness_values = laplacian.view(laplacian.shape[0], -1).std(dim=1) * 2
+        for i in range(num_channels):
+            # Extract the single channel
+            single_channel = images_tensor[:, i:i+1, :, :]
 
-        return sharpness_values
+            # Apply the Laplacian filter
+            laplacian = torch.nn.functional.conv2d(single_channel, laplacian_kernel, padding=1)
 
-    @staticmethod
-    def sharpness_PIL(pil_images):
-        sharpness_scores = []
+            # Compute the standard deviation for each image in the channel
+            channel_sharpness = laplacian.view(laplacian.shape[0], -1).std(dim=1)
+            sharpness_values_per_channel.append(channel_sharpness)
 
-        for img in pil_images:
-            # Convert PIL image to grayscale
-            gray_img = img.convert('L')
+        # Combine sharpness values from all channels
+        # Here we're averaging the sharpness values, but other methods like max can also be used
+        combined_sharpness = torch.stack(sharpness_values_per_channel, dim=1).mean(dim=1)
 
-            # Convert PIL image to NumPy array
-            np_img = np.array(gray_img)
+        return combined_sharpness
 
-            # Apply Laplacian operator
-            laplacian = cv2.Laplacian(np_img, cv2.CV_64F)
-
-            # Compute the standard deviation (sharpness score)
-            sharpness = laplacian.std()
-            sharpness_scores.append(sharpness)
-
-        # Convert list of sharpness scores to a tensor
-        sharpness_tensor = torch.tensor(sharpness_scores, dtype=torch.float32)
-
-        return sharpness_tensor
 
 class DiscriminatorManager:
+    gradient_types = ["noise", "latent", "decode", "embedding"]
     def __init__(self, config_json, device, noise_scheduler, tokenizers, text_encoders, is_sdxl, save_image_steps=10, print_diagnostics=False):
         with open(config_json, 'r') as cfg:
             self.config_json = json.load(cfg)
@@ -696,6 +680,7 @@ class DiscriminatorManager:
         original_samples = (noisy_samples - sqrt_one_minus_alpha_prod * noise) / sqrt_alpha_prod
         return original_samples
 
+
     def scale_losses(self, loss, timesteps):
         # Since we've converted from noise back to image space, we should use inverse of debiased estimation 
         # to obtain a uniform loss scale across timesteps
@@ -709,32 +694,45 @@ class DiscriminatorManager:
         # Step 4: Multiply the original losses by the inverse scaling factor
         return loss * scaling_factors
 
-
-
     def apply_discriminator_losses(self, base_loss, timesteps, original_latents, noise, noisy_latents, noise_pred, step, output_name, output_dir):
         
         def compute_discriminator_loss(discriminator, discriminator_name, original, denoised, timesteps, all_diagnostics):
-            #original_scores = discriminator.compute_scores(original[discriminator.input_type])
-            #denoised_scores = discriminator.compute_scores(denoised[discriminator.input_type])
-            with ThreadPoolExecutor() as executor:
-                original_future = executor.submit(discriminator.compute_scores, original[discriminator.input_type])
-                denoised_future = executor.submit(discriminator.compute_scores, denoised[discriminator.input_type])
-                original_scores = original_future.result()
-                denoised_scores = denoised_future.result()
-            discriminator_loss = discriminator.loss_func(original_scores, denoised_scores)
-            
-            """
-            Q = alphas_cumprod_t
-            SNR = Q / (1-Q)
-            debias = 1 / SNR^0.5
-            debias = sqrt((1-Q)/Q)
-            """            
-            if discriminator.input_type != 'noise':
-                discriminator_loss = self.scale_losses(discriminator_loss, timesteps)
-            discriminator_loss *= discriminator.weight
+            import contextlib
+            @contextlib.contextmanager
+            def conditional_grad(input_type):
+                if input_type in self.gradient_types:
+                #     with torch.enable_grad():
+                #         yield
+                # else:
+                    with torch.no_grad():
+                        yield
 
-            diagnostics = self._accumulate_diagnostics(discriminator_name, timesteps, original_scores, denoised_scores, discriminator_loss, base_loss)
-            return discriminator_loss, diagnostics
+            with torch.no_grad():
+                original_scores = discriminator.compute_scores(original[discriminator.input_type])
+                
+            # with ThreadPoolExecutor() as executor:
+            #     original_future = executor.submit(discriminator.compute_scores, original[discriminator.input_type])
+            #     denoised_future = executor.submit(discriminator.compute_scores, denoised[discriminator.input_type])
+            #     original_scores = original_future.result()
+            #     denoised_scores = denoised_future.result()
+
+            with conditional_grad(discriminator.input_type):       
+                ### original_scores = discriminator.compute_scores(original[discriminator.input_type])
+                denoised_scores = discriminator.compute_scores(denoised[discriminator.input_type])
+                discriminator_loss = discriminator.loss_func(original_scores, denoised_scores)
+
+                """
+                Q = alphas_cumprod_t
+                SNR = Q / (1-Q)
+                debias = 1 / SNR^0.5
+                debias = sqrt((1-Q)/Q)
+                """            
+                ### if discriminator.input_type != 'noise':
+                ###     discriminator_loss = self.scale_losses(discriminator_loss, timesteps)
+                discriminator_loss *= discriminator.weight
+
+                diagnostics = self._accumulate_diagnostics(discriminator_name, timesteps, original_scores, denoised_scores, discriminator_loss, base_loss)
+                return discriminator_loss, discriminator, diagnostics
 
         with torch.no_grad():
             original = {}
@@ -744,10 +742,10 @@ class DiscriminatorManager:
             denoised["noise"] = noise_pred
 
             original["latent"] = original_latents
-            denoised["latent"] = self.remove_noise(noisy_latents, noise_pred, timesteps)
+            with torch.enable_grad():
+                denoised["latent"] = self.remove_noise(noisy_latents, noise_pred, timesteps)
 
             # Decode latents and get images, embeddings
-            # self._process_batch(original, denoised)
             self._process_batch(original, denoised, step, timesteps, output_name, output_dir)
             
             # Apply each discriminator in parallel
@@ -760,10 +758,15 @@ class DiscriminatorManager:
                     futures.append(future)
                 
                 all_diagnostics = []
-                modified_loss = 0
+                gradient_loss = 0
+                ungradient_loss = 0
                 for future in futures:
-                    discriminator_loss, diagnostics = future.result()
-                    modified_loss += discriminator_loss
+                    discriminator_loss, discriminator, diagnostics = future.result()
+                    if discriminator.input_type in self.gradient_types:
+                        with torch.enable_grad():
+                            gradient_loss += discriminator_loss.item()
+                    else:
+                        ungradient_loss += discriminator_loss.item()
                     all_diagnostics.extend(diagnostics)
                 
 
@@ -772,153 +775,15 @@ class DiscriminatorManager:
                 df = pd.DataFrame(all_diagnostics)
                 self._pivot_and_display(df)
 
-
-            # Compute the scaling factor
-            modified_loss_scale = (base_loss + modified_loss) / base_loss
-
-        final_loss = base_loss * modified_loss_scale
-        return final_loss
-
-    def _accumulate_diagnostics(self, discriminator_name, timesteps, original_scores, denoised_scores, discriminator_loss, base_loss):
-        with torch.no_grad():
-            diagnostic_data = []
-
-            # Ensure tensors are 2D (batch_size x data)
-            original_scores = original_scores.view(-1, 1)
-            denoised_scores = denoised_scores.view(-1, 1)
-            discriminator_loss = discriminator_loss.view(-1, 1)
-            base_loss = base_loss.view(-1, 1)
-            timesteps = timesteps.view(-1, 1)
-
-            # Convert to numpy arrays for easier processing
-            original_scores_np = original_scores.cpu().numpy()
-            denoised_scores_np = denoised_scores.cpu().numpy()
-            discriminator_loss_np = discriminator_loss.cpu().numpy()
-            base_loss_np = base_loss.cpu().numpy()
-            timesteps_np = timesteps.cpu().numpy()
-
-            for i in range(discriminator_loss_np.shape[0]):
-                # Check if the scores are simple floats (ndim == 2 and size == 1 for 2nd dim)
-                #if original_scores.ndim == 2 and original_scores.size(1) == 1 and denoised_scores.ndim == 2 and denoised_scores.size(1) == 1:
-                if discriminator_loss_np.shape[0] == original_scores_np.shape[0]:
-                    diagnostic_data.append({"Batch": i, "Discriminator": discriminator_name, "Type": "Orig", "Value": original_scores_np[i, 0], "TS": timesteps_np[i, 0]})
-                    diagnostic_data.append({"Batch": i, "Discriminator": discriminator_name, "Type": "Deno", "Value": denoised_scores_np[i, 0], "TS": timesteps_np[i, 0]})
-
-                # Always add the loss
-                diagnostic_data.append({"Batch": i, "Discriminator": discriminator_name, "Type": "Loss", "Value": discriminator_loss_np[i, 0], "TS": timesteps_np[i, 0]})
-
-                # Add original latent loss (only once per batch, not per discriminator)
-                diagnostic_data.append({"Batch": i, "Discriminator": "latent", "Type": "Loss", "Value": base_loss_np[i, 0], "TS": timesteps_np[i, 0]})
-
-            return diagnostic_data
-
-    def _pivot_and_display(self, df, row_order=['Type', 'Batch', 'TS'], max_row_length=120):
-        df = df.drop_duplicates(subset=row_order + ['Discriminator'])
-
-        # Pivot the DataFrame
-        pivoted_df = df.pivot_table(index=row_order, columns='Discriminator', values='Value', aggfunc='first')
-
-
-        # # Check if 'Loss' is in the 'Type' level after pivoting
-        # if 'Loss' in pivoted_df.index.get_level_values('Type'):
-        #     # Sum only the 'Loss' rows
-        #     loss_rows = pivoted_df.xs('Loss', level='Type')
-        #     total_loss = loss_rows.sum(axis=1)
-        #     # Create a total column for 'Loss' rows
-        #     pivoted_df.loc[loss_rows.index, 'Total'] = total_loss.values
-
-
-        # Add 'Total' column by summing across the specified columns, only for 'Loss'
-        loss_rows = pivoted_df.xs('Loss', level='Type')
-        total_loss = loss_rows.sum(axis=1)
-        # Create a 'Total' column with the same multi-level index as pivoted_df
-        total_column = pd.Series([float('nan')] * len(pivoted_df.index), index=pivoted_df.index)
-        total_column.loc[('Loss', slice(None))] = total_loss.values.astype(float)
-        pivoted_df['total'] = total_column
-
-        # Sort columns based on the order in self.discriminators
-        discriminator_order = ['total'] + ['latent'] + list(self.discriminators.keys()) if 'latent' in pivoted_df.columns else ['total'] + list(self.discriminators.keys())
-        pivoted_df = pivoted_df.reindex(columns=discriminator_order)
-
-        # Compute maximum column header length
-        num_columns = len(pivoted_df.columns) # +1 for 'Batch'
-        space_for_columns = max_row_length - len('Type B  ')
-        max_col_length = max(7, space_for_columns // num_columns)
-
-        # Abbreviate discriminator names based on computed length
-        pivoted_df.columns = [col[:max_col_length].strip() for col in pivoted_df.columns]
-
-        # Round the data to desired decimal places and fillna
-        rounded_df = pivoted_df.round(2).fillna('')
-
-        # Reorder 'Type' values
-        type_order = ['Loss', 'Orig', 'Deno']
-        rounded_df = rounded_df.reindex(type_order, level='Type')
-
-        # Modify the index to collapse headers
-        rounded_df.index = [' '.join(map(str, idx)) for idx in rounded_df.index]
-
-        # Convert DataFrame to string and print
-        df_string = rounded_df.to_string(index=True, justify='right')
-        tqdm.write(df_string)
-
-
-
-
-
-    def apply_discriminator_losses(self, base_loss, timesteps, original_latents, noise, noisy_latents, noise_pred, step, output_name, output_dir):
-        
-        original = {}
-        denoised = {}
-        
-        original["noise"] = noise
-        denoised["noise"] = noise_pred
-
-        original["latent"] = original_latents
-        denoised["latent"] = self.remove_noise(noisy_latents, noise_pred, timesteps)
-
-        # Decode latents and get images, embeddings
-        self.vae_model.to(self.device)
-        self._process_batch(original, denoised, step, timesteps, output_name, output_dir)
-
-        # Apply each discriminator
-        modified_loss = 0
-        all_diagnostics = []
-        for discriminator_name, discriminator in self.discriminators.items():
-            original_scores = discriminator.compute_scores(original[discriminator.input_type])
-            denoised_scores = discriminator.compute_scores(denoised[discriminator.input_type])
-
-            discriminator_loss = discriminator.loss_func(original_scores, denoised_scores)
-            
-            """
-            Q = alphas_cumprod_t
-            SNR = Q / (1-Q)
-            debias = 1 / SNR^0.5
-            debias = sqrt((1-Q)/Q)
-            """
-            if discriminator.input_type != 'noise':
-                discriminator_loss = self.scale_losses(discriminator_loss, timesteps)
-            
-            discriminator_loss *= discriminator.weight
-
-            # Try to normalize loss scale across different timesteps
-            #discriminator_loss = scale_v_prediction_loss_like_noise_prediction(discriminator_loss, timesteps, noise_scheduler)
-
-            #self._print_diagnostics(discriminator_name, timesteps, original_scores, denoised_scores, discriminator_loss, base_loss)
-
-            diagnostics = self._accumulate_diagnostics(discriminator_name, timesteps, original_scores, denoised_scores, discriminator_loss, base_loss)
-            all_diagnostics.extend(diagnostics)
-
-            modified_loss += discriminator_loss
-
-        # Convert accumulated data to DataFrame
-        df = pd.DataFrame(all_diagnostics)
-
-        # Pivoting and displaying the data
-        if self.print_diagnostics:
-            self._pivot_and_display(df)
-
-        return base_loss + modified_loss
+            # # Compute the scaling factor
+            # denominator = base_loss + gradient_loss
+            # if base_loss + gradient_loss == 0:
+            #     final_loss = base_loss + gradient_loss + ungradient_loss
+            # else:
+            #     modified_loss_scale = (base_loss + gradient_loss + ungradient_loss) / denominator
+            #     final_loss = (base_loss + gradient_loss) * modified_loss_scale.detach()
+                        
+        return base_loss + gradient_loss + ungradient_loss
 
     def _accumulate_diagnostics(self, discriminator_name, timesteps, original_scores, denoised_scores, discriminator_loss, base_loss):
         with torch.no_grad():
@@ -1002,51 +867,6 @@ class DiscriminatorManager:
         # Convert DataFrame to string and print
         df_string = rounded_df.to_string(index=True, justify='right')
         tqdm.write(df_string)
-
-    # def _pivot_and_display(self, df, row_order=['Type', 'Batch'], max_row_length=120):
-    #     #df = df.drop_duplicates(subset=row_order + ['Discriminator'])
-
-    #     # Pivot the DataFrame
-    #     pivoted_df = df.pivot_table(index=row_order, columns='Discriminator', values='Value', aggfunc='first')
-
-    #     # Sort columns based on the order in self.discriminators
-    #     discriminator_order = list(self.discriminators.keys())  # Assuming this is the correct order
-    #     pivoted_df = pivoted_df[discriminator_order + ['latent'] if 'latent' in pivoted_df.columns else discriminator_order]
-
-    #     # Compute maximum column header length
-    #     num_columns = len(pivoted_df.columns) + 1  # +1 for 'Batch'
-    #     space_for_columns = max_row_length - len('Type B  ')
-    #     max_col_length = max(7, space_for_columns // num_columns)
-
-    #     # Abbreviate discriminator names based on computed length
-    #     pivoted_df.columns = [col[:max_col_length].strip() for col in pivoted_df.columns]
-
-    #     # Round the data to desired decimal places
-    #     rounded_df = pivoted_df.round(2)
-
-    #     # Add 'Total' column by summing across the specified columns, only for 'Loss'
-    #     # Filter DataFrame for 'Loss' rows and compute total
-    #     loss_rows = rounded_df.xs('Loss', level='Type')
-    #     total_loss = loss_rows.sum(axis=1)
-
-    #     # Create a 'Total' column with the same multi-level index as rounded_df
-    #     total_column = pd.Series('', index=rounded_df.index)
-    #     total_column.loc[('Loss', slice(None))] = total_loss.values
-    #     rounded_df['total'] = total_column
-
-    #     # Reorder 'Type' values
-    #     type_order = ['Loss', 'Orig', 'Deno']
-    #     rounded_df = rounded_df.reindex(type_order, level='Type')
-
-    #     # Replace NaN with blank spaces for 'Orig' and 'Deno' and for latent column
-    #     rounded_df = rounded_df.fillna('')
-
-    #     # Modify the index to collapse headers
-    #     rounded_df.index = [' '.join(map(str, idx)) for idx in rounded_df.index]
-
-    #     # Convert DataFrame to string and print
-    #     df_string = rounded_df.to_string(index=True, justify='right')
-    #     tqdm.write(df_string)
 
     # Inside DiscriminatorManager
     def _process_batch(self, original, denoised, step, timesteps, output_name, output_dir):
@@ -1055,7 +875,6 @@ class DiscriminatorManager:
         original["embedding"], denoised["embedding"] = self._get_image_embeddings(original["decode"], denoised["decode"])
         original["decode"].cpu()
         denoised["decode"].cpu()
-
 
     def _decode_latents(self, 
                         original_latents: torch.Tensor, 
@@ -1072,62 +891,32 @@ class DiscriminatorManager:
         Tuple[torch.Tensor, torch.Tensor]: Tensors representing the decoded and rescaled original and denoised images.
         """
         def decode_latents_single(latents):
-            with torch.no_grad():
-                decodes = []
-                for i in range(latents.size(0)):
-                    latent = latents[i].unsqueeze(0).to(self.vae_model.dtype)
-                    decode = self.vae_model.decode(latent).sample
-                    # Rescale from [-1, 1] to [0, 1]
-                    decode = (decode + 1) / 2
-                    decode = decode.clamp(0, 1)
-                    decodes.append(decode)
+            decodes = []
+            for i in range(latents.size(0)):
+                latent = latents[i].unsqueeze(0).to(self.vae_model.dtype)
+                decode = self.vae_model.decode(latent).sample
+                # Rescale from [-1, 1] to [0, 1]
+                decode = (decode + 1) / 2
+                decode = decode.clamp(0, 1)
+                decodes.append(decode)
 
             return torch.cat(decodes, dim=0)
 
         return decode_latents_single(original_latents), decode_latents_single(denoised_latents)
 
-    # def _get_PIL_images(self, 
-    #                     original_decodes: torch.Tensor, 
-    #                     denoised_decodes: torch.Tensor
-    #                     ) -> Tuple[List[Image.Image], List[Image.Image]]:
-    #     """
-    #     Converts decoded images to a list of PIL images.
-
-    #     Parameters:
-    #     original_decodes (torch.Tensor): Decoded original images.
-    #     denoised_decodes (torch.Tensor): Decoded denoised images.
-
-    #     Returns:
-    #     Tuple[List[Image.Image], List[Image.Image]]: Lists of PIL images for original and denoised images.
-    #     """
-    #     def to_PIL(images):
-    #         with torch.no_grad():
-    #             # Rescale from [-1, 1] to [0, 1]
-    #             images = (images / 2 + 0.5).clamp(0, 1)
-    #             # Convert to 0-255 range and change layout to [batch, height, width, channels]
-    #             images = images.cpu().permute(0, 2, 3, 1).float().numpy()
-    #             images = np.nan_to_num(images, nan=0.0, posinf=0.0, neginf=0.0)
-    #             images = (images * 255).round().astype("uint8")
-    #             return [Image.fromarray(im) for im in images]
-
-    #     return to_PIL(original_decodes), to_PIL(denoised_decodes)
-
-
-
     def _get_image_embeddings(self, original_images: torch.Tensor, denoised_images: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         def _transform(n_px):
             return transforms.Compose([
-                transforms.Resize(n_px, interpolation=transforms.InterpolationMode.BICUBIC),
+                transforms.Resize(n_px, interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
                 transforms.CenterCrop(n_px),
                 # Custom normalization for tensors in the range [0, 255]
                 transforms.Lambda(lambda x: x.float() / 255.0),
                 transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
             ])
         def get_embeddings(images):
-            with torch.no_grad():
-                preprocessed_images = preprocess(images)
-                embeddings = clip_model.encode_image(preprocessed_images)
-                return embeddings / embeddings.norm(dim=-1, keepdim=True)
+            preprocessed_images = preprocess(images)
+            embeddings = clip_model.encode_image(preprocessed_images)
+            return embeddings / embeddings.norm(dim=-1, keepdim=True)
 
         clip_model, _ = self.vit_model
         preprocess = _transform(224) # input size for ViT-L/14
@@ -1162,123 +951,66 @@ class DiscriminatorManager:
             thread.start()
 
 
-    # def _print_diagnostics(self, discriminator_name, timesteps, original_scores, denoised_scores, discriminator_loss, base_loss):
-    #     with torch.no_grad():
-    #         if denoised_scores.ndim == 0:
-    #             print(f"\n{discriminator_name} Scores and Losses:")
-    #             print(f"{'Index':<6} {'Original Score':<15} {'Denoised Score':<15} {'Discriminator Loss':<20} {'Latent Loss':<15}")
-    #             print(f"{'All':<6} {original_scores.item():<15.2f} {denoised_scores.item():<15.2f} {discriminator_loss.item():<20.2f} {base_loss.item():<15.2f}")
-    #         else:
-    #             original_scores_np = original_scores.cpu().numpy()
-    #             denoised_scores_np = denoised_scores.cpu().numpy()
-    #             discriminator_loss_np = discriminator_loss.cpu().numpy()
-    #             base_loss_np = base_loss.cpu().numpy()
+# instead of passin gloss func direction  you can pass a lambda to it
+# to call it with optional arguments
+# so if you set negative_loss_scale to 0
+# you dont reward it for doing better than the original image
+# if you set it to -1
+# you punish any deviation from original score
+# positive or negative
+# if you set it to 0.5 (default)
+# then improvements over original image get negative loss of half the MSE
 
-    #             print(f"\n{discriminator_name} Scores and Losses:")
-    #             for i in range(len(denoised_scores_np)):
-    #                 print(f"{i:<6} {original_scores_np[i]:<15.2f} {denoised_scores_np[i]:<15.2f} {discriminator_loss_np[i]:<20.2f} {base_loss_np[i]:<15.2f}")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        # instead of passin gloss func direction  you can pass a lambda to it
-        # to call it with optional arguments
-        # so if you set negative_loss_scale to 0
-        # you dont reward it for doing better than the original image
-        # if you set it to -1
-        # you punish any deviation from original score
-        # positive or negative
-        # if you set it to 0.5 (default)
-        # then improvements over original image get negative loss of half the MSE
-
-        # discriminator_manager.add_function(
-        #     "pixel",
-        #     5,
-        #     lambda x, y: positive_classifier_mse(x, y, negative_loss_scale=-1),
-        #     lambda x: x,
-        #     #"image"
-        #     "decode"
-        # )
-        # discriminator_manager.add_function(
-        #     "entropy",
-        #     2.5,
-        #     positive_classifier_mse,
-        #     NoiseAnalysis.entropy,
-        #     #lambda x: NoiseAnalysis.entropy(x) - NoiseAnalysis.kurtosis(x),
-        #     "noise"
-        # )
-        # discriminator_manager.add_function(
-        #     "ent-kur",
-        #     1,
-        #     positive_classifier_mse,
-        #     #NoiseAnalysis.entropy,
-        #     lambda x: NoiseAnalysis.entropy(x) - NoiseAnalysis.kurtosis(x),
-        #     "noise"
-        # )
-        # discriminator_manager.add_function(
-        #     "kurtosis",
-        #     2.5,
-        #     lambda x,y: positive_classifier_mse(x, y, negative_loss_scale=-1),
-        #     NoiseAnalysis.kurtosis,
-        #     "noise"
-        # )
-        # discriminator_manager.add_function(
-        #     "skewness",
-        #     2.5,
-        #     lambda x,y: positive_classifier_mse(x, y, negative_loss_scale=-1),
-        #     NoiseAnalysis.skewness,
-        #     "noise"
-        # )
-        # discriminator_manager.add_function(
-        #     "sharpness",
-        #     0.5,
-        #     positive_classifier_mse,
-        #     NoiseAnalysis.sharpness_tensor,
-        #     #"image"
-        #     "decode"
-        # )
-        # discriminator_manager.add_function(
-        #     "noise",
-        #     1,
-        #     positive_classifier_mse,
-        #     NoiseAnalysis.noise,
-        #     "image"
-        # )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+# discriminator_manager.add_function(
+#     "pixel",
+#     5,
+#     lambda x, y: positive_classifier_mse(x, y, negative_loss_scale=-1),
+#     lambda x: x,
+#     #"image"
+#     "decode"
+# )
+# discriminator_manager.add_function(
+#     "entropy",
+#     2.5,
+#     positive_classifier_mse,
+#     NoiseAnalysis.entropy,
+#     #lambda x: NoiseAnalysis.entropy(x) - NoiseAnalysis.kurtosis(x),
+#     "noise"
+# )
+# discriminator_manager.add_function(
+#     "ent-kur",
+#     1,
+#     positive_classifier_mse,
+#     #NoiseAnalysis.entropy,
+#     lambda x: NoiseAnalysis.entropy(x) - NoiseAnalysis.kurtosis(x),
+#     "noise"
+# )
+# discriminator_manager.add_function(
+#     "kurtosis",
+#     2.5,
+#     lambda x,y: positive_classifier_mse(x, y, negative_loss_scale=-1),
+#     NoiseAnalysis.kurtosis,
+#     "noise"
+# )
+# discriminator_manager.add_function(
+#     "skewness",
+#     2.5,
+#     lambda x,y: positive_classifier_mse(x, y, negative_loss_scale=-1),
+#     NoiseAnalysis.skewness,
+#     "noise"
+# )
+# discriminator_manager.add_function(
+#     "sharpness",
+#     0.5,
+#     positive_classifier_mse,
+#     NoiseAnalysis.sharpness_tensor,
+#     #"image"
+#     "decode"
+# )
+# discriminator_manager.add_function(
+#     "noise",
+#     1,
+#     positive_classifier_mse,
+#     NoiseAnalysis.noise,
+#     "image"
+# )

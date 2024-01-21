@@ -246,9 +246,6 @@ class NetworkTrainer:
         custom_train_functions.fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler)
         args.zero_terminal_snr = True
 
-        discriminator_config_json = os.path.join(args.train_data_dir, 'discriminator_config.json') # './/discriminator_config.json'
-        discriminator_manager = DiscriminatorManager(discriminator_config_json, accelerator.device, noise_scheduler, tokenizers, text_encoders, self.is_sdxl, save_image_steps=100, print_diagnostics=True)
-        vae = discriminator_manager.vae_model
         print(f"vae_scale_factor: {2 ** (len(vae.config.block_out_channels) - 1)}")
         #vae = AutoencoderTiny.from_pretrained("madebyollin/taesdxl", torch_dtype=torch.float32)
 
@@ -734,7 +731,11 @@ class NetworkTrainer:
                 accelerator.print(f"removing old checkpoint: {old_ckpt_file}")
                 os.remove(old_ckpt_file)
 
-        use_timestep_window = True
+        discriminator_config_json = os.path.join(args.train_data_dir, 'discriminator_config.json') # './/discriminator_config.json'
+        discriminator_manager = DiscriminatorManager(discriminator_config_json, accelerator.device, noise_scheduler, tokenizers, text_encoders, self.is_sdxl, save_image_steps=100, print_diagnostics=True)
+        vae = discriminator_manager.vae_model
+
+        use_timestep_window = False
         
         if use_timestep_window:
             losses = []
@@ -746,10 +747,6 @@ class NetworkTrainer:
             slide_dir = 1
             #args.min_timestep = 0 
             #args.max_timestep = timestep_range
-            
-            
-        torch.autograd.set_detect_anomaly(True)
-        
         
         # For --sample_at_first
         # args.sample_at_first = True
@@ -867,7 +864,7 @@ class NetworkTrainer:
                             noise,
                             # We will remove_noise from noisy_latents for comparing to latents
                             noisy_latents, 
-                            noise_pred,
+                            noise_pred,  
                             step,
                             args.output_name,
                             args.output_dir
