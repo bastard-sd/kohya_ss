@@ -1,0 +1,57 @@
+[general]
+#dataset
+bucket_no_upscale = true
+bucket_reso_steps = 64
+enable_bucket = true
+max_bucket_reso= 2048
+min_bucket_reso = 512
+resolution = [1024, 1024]
+#subset
+caption_extension = ".txt"
+color_aug = false
+flip_aug = false
+keep_tokens = 0
+random_crop = false
+shuffle_caption = true
+caption_dropout_every_n_epochs = 0
+caption_dropout_rate = 0.0
+caption_tag_dropout_rate = 0.0
+
+[[datasets]]
+batch_size = 1
+
+  [[datasets.subsets]]
+  image_dir = "/home/user/data/training/Gigantism_v0/1_loli and giant"
+  class_tokens = "loli and giant"
+  num_repeats = 1
+  is_reg = false
+
+  [[datasets.subsets]]
+  image_dir = "/home/user/data/training/Gigantism_v0/1_sex scene"
+  class_tokens = "sex"
+  num_repeats = 1
+  is_reg = false
+
+  [[datasets.subsets]]
+  image_dir = "/home/user/data/training/FamilyStyle_v1/1_family"
+  class_tokens = "familystyle"
+  num_repeats = 1
+  is_reg = false
+
+  [[datasets.subsets]]
+  image_dir = "/home/user/data/training/FamilyStyle_v1/1_kids"
+  class_tokens = "child kid girl"
+  num_repeats = 1
+  is_reg = false
+
+  [[datasets.subsets]]
+  image_dir = "/home/user/data/training/FamilyStyle_v1/1_sexfeel"
+  class_tokens = "sex"
+  num_repeats = 1
+  is_reg = false
+
+  [[datasets.subsets]]
+  image_dir = "/home/user/data/training/PinkChildSex_v0/3_child sex"
+  class_tokens = "sex"
+  num_repeats = 10
+  is_reg = false

@@ -730,8 +730,12 @@ class NetworkTrainer:
             if os.path.exists(old_ckpt_file):
                 accelerator.print(f"removing old checkpoint: {old_ckpt_file}")
                 os.remove(old_ckpt_file)
-
-        discriminator_config_json = os.path.join(args.train_data_dir, 'discriminator_config.json') # './/discriminator_config.json'
+                
+        if args.discriminator_config_path:
+            discriminator_config_json = args.discriminator_config_path
+        else:
+            discriminator_config_json = os.path.join(args.train_data_dir, 'discriminator_config.json')
+            
         discriminator_manager = DiscriminatorManager(discriminator_config_json, accelerator.device, noise_scheduler, tokenizers, text_encoders, self.is_sdxl, save_image_steps=100, print_diagnostics=True)
         vae = discriminator_manager.vae_model
 
@@ -867,7 +871,8 @@ class NetworkTrainer:
                             noise_pred,  
                             step,
                             args.output_name,
-                            args.output_dir
+                            args.output_dir,
+                            batch['captions'],
                         )
 
                         #loss = apply_discriminator_losses(loss, denoisepredd_noisy_latents, latents)
@@ -1078,6 +1083,10 @@ def setup_parser() -> argparse.ArgumentParser:
         "--no_half_vae",
         action="store_true",
         help="do not use fp16/bf16 VAE in mixed precision (use float VAE) / mixed precisionでも fp16/bf16 VAEを使わずfloat VAEを使う",
+    )
+    parser.add_argument(
+        "--discriminator_config_path",
+        default=None
     )
     return parser
 

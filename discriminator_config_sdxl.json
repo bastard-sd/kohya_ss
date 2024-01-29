@@ -155,6 +155,33 @@
         "text": "watermark, website address, url, logo, artist_name",
         "multiToken": true
       }
+    ],
+    "imageRewards": [
+      {
+        "name": "IMGRWD",
+        "priority": 3,
+        "classifierType": "positive_classifier_mse",
+        "filePath": ".//0_bastard//other//ImageReward.pt",
+        "input_type": "preprocess"
+      }
+    ],
+    "blipScores": [
+      {
+        "name": "BLIP",
+        "priority": 3,
+        "classifierType": "positive_classifier_mse",
+        "filePath": ".//0_bastard//other//BLIP_model_large.pth",
+        "input_type": "preprocess"
+      }
+    ],
+    "clipScores": [
+      {
+        "name": "CLIP",
+        "priority": 3,
+        "classifierType": "positive_classifier_mse",
+        "filePath": ".//0_bastard//other//CLIP_ViT-L-14.pt",
+        "input_type": "preprocess"
+      }
     ]
   }
   

@@ -55,7 +55,7 @@ import pytorch_lightning as pl
 import safetensors.torch
 import re
 from typing import Any, List, NamedTuple, Optional, Tuple, Union, Callable
-from transformers import CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPImageProcessor
+from transformers import CLIPModel, CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPImageProcessor
 from library import sdxl_model_util
 from PIL import Image
 from torchvision.transforms.functional import to_pil_image
@@ -65,11 +65,56 @@ import numpy as np
 import pandas as pd
 from diffusers import AutoencoderTiny
 
+import torch.nn.functional as F
+from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
+try:
+    from torchvision.transforms import InterpolationMode
+    BICUBIC = InterpolationMode.BICUBIC
+except ImportError:
+    BICUBIC = Image.BICUBIC
+    
+from blip import BLIP_Pretrain, load_checkpoint
+import json
+import io
+import tempfile
+from inspect import signature
+
+DEBUG = True
+
+def do(func, *args, target=None, label=None, **kwargs):
+    if DEBUG:
+        label_str = f"{label}: " if label is not None else ""
+        if hasattr(target, 'size'):
+            print(f"{label_str}{target.size()}")
+        elif hasattr(target, '__len__'):
+            print(f"{label_str}{len(target)}")
+        result = func(*args, **kwargs)
+        if hasattr(result, 'size'):
+            print(f"{label_str} size: {result.size()}")
+        elif hasattr(result, '__len__'):
+            print(f"{label_str} len: {len(result)}")
+        else:
+            print(f"{label_str} {result}")
+        return result
+    else:
+        return func(*args, **kwargs)
+
+
+
 # for network_module in network.text_encoder_loras:
 #     random_dropout = random.uniform(0, args.network_dropout)
 #     network_module.dropout = random_dropout
 
-  
+# def preprocess(n_px):
+#     return Compose([
+#         Resize(n_px, interpolation=BICUBIC),
+#         CenterCrop(n_px),
+#         lambda image: image.convert("RGB"),
+#         ToTensor(),
+#         Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
+#     ])
+
+
 def positive_classifier_mse(original_scores, denoised_scores, power=2, min_original_score=-100, negative_loss_scale=0.5):
     # Check if the tensors have more than one dimension and flatten if needed
     if original_scores.ndim > 1:
@@ -102,6 +147,7 @@ def positive_classifier_mse(original_scores, denoised_scores, power=2, min_origi
 # For BAD scores we simply swap the order
 def negative_classifier_mse(original_scores, denoised_scores):
     return positive_classifier_mse(denoised_scores, original_scores)     
+
 
 class TextualInversionEmbed():
     def __init__(self, embed_path):
@@ -188,6 +234,206 @@ class AestheticModelLinear(AestheticModelBase):
             nn.Linear(16, 1),
         )
         self.load_model(model_path)
+
+class AestheticModelLinearAlt(AestheticModelBase):
+    def __init__(self, input_size, model_path=None):
+        super().__init__()
+        self.input_size = input_size
+        self.layers = nn.Sequential(
+            nn.Linear(self.input_size, 1024),
+            nn.Dropout(0.2),
+            nn.Linear(1024, 128),
+            nn.Dropout(0.2),
+            nn.Linear(128, 64),
+            nn.Dropout(0.1),
+            nn.Linear(64, 16),
+            nn.Linear(16, 1)
+        )
+        # initial MLP param
+        for name, param in self.layers.named_parameters():
+            if 'weight' in name:
+                nn.init.normal_(param, mean=0.0, std=1.0/(self.input_size+1))
+            if 'bias' in name:
+                nn.init.constant_(param, val=0)
+                
+        if model_path:
+            self.load_model(model_path)
+
+class ImageRewardModel(pl.LightningModule):
+    def __init__(self, aes_model, config, device):
+        super().__init__()
+        self.blip = BLIP_Pretrain(image_size=224, vit='large', config=config)
+        self.mlp = AestheticModelLinearAlt(768)
+        
+        state_dict = torch.load(aes_model, map_location='cpu')
+        self.load_state_dict(state_dict, strict=False)
+        self.to(device)
+        
+        self.mean = 0.16717362830052426
+        self.std = 1.0333394966054072
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    # def add_image_rewards(self):
+    #     model_path = r".\0_bastard\other\ImageReward.pt"
+    #     config_obj = {
+    #         "architectures": [
+    #             "BertModel"
+    #         ],
+    #         "attention_probs_dropout_prob": 0.1,
+    #         "hidden_act": "gelu",
+    #         "hidden_dropout_prob": 0.1,
+    #         "hidden_size": 768,
+    #         "initializer_range": 0.02,
+    #         "intermediate_size": 3072,
+    #         "layer_norm_eps": 1e-12,
+    #         "max_position_embeddings": 512,
+    #         "model_type": "bert",
+    #         "num_attention_heads": 12,
+    #         "num_hidden_layers": 12,
+    #         "pad_token_id": 0,
+    #         "type_vocab_size": 2,
+    #         "vocab_size": 30524,
+    #         "encoder_width": 768,
+    #         "add_cross_attention": True   
+    #     }
+  
+    #     # Write config to a temporary file
+    #     with tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.json') as tmp:
+    #         json.dump(config_obj, tmp)
+    #         config_path = tmp.name
+
+    #     self.model = ImageRewardModel(
+    #         model_path,
+    #         config_path,
+    #         device
+    #     )
+
+
+
+# class CLIPScore(nn.Module):
+#     def __init__(self, pathname, device='cpu'):
+#         super().__init__()
+#         self.device = device
+#         self.clip_model, self.preprocess = clip.load(pathname, device=self.device, jit=False)
+
+#         if device == "cpu":
+#             self.clip_model.float()
+#         else:
+#             clip.model.convert_weights(
+#                 self.clip_model)  # Actually this line is unnecessary since clip by default already on float16
+
+#         # have clip.logit_scale require no grad.
+#         self.clip_model.logit_scale.requires_grad_(False)
+
+#     def score(self, prompt, image):
+
+#         if (type(image).__name__ == 'list'):
+#             _, rewards = self.inference_rank(prompt, image)
+#             return rewards
+
+#         # text encode
+#         text = clip.tokenize(prompt, truncate=True).to(self.device)
+#         txt_features = F.normalize(self.clip_model.encode_text(text))
+
+#         # image encode
+#         if isinstance(image, Image.Image):
+#             pil_image = image
+#         elif isinstance(image, str):
+#             if os.path.isfile(image):
+#                 pil_image = Image.open(image)
+#         image = self.preprocess(pil_image).unsqueeze(0).to(self.device)
+#         image_features = F.normalize(self.clip_model.encode_image(image))
+
+#         # score
+#         rewards = torch.sum(torch.mul(txt_features, image_features), dim=1, keepdim=True)
+
+#         score = rewards.detach().cpu().numpy().item()
+#         score += 1
+#         score *= 5
+#         return score
+
+#     def inference_rank(self, prompt, generations_list):
+
+#         text = clip.tokenize(prompt, truncate=True).to(self.device)
+#         txt_feature = F.normalize(self.clip_model.encode_text(text))
+
+#         txt_set = []
+#         img_set = []
+#         for generations in generations_list:
+#             # image encode
+#             img_path = generations
+#             pil_image = Image.open(img_path)
+#             image = self.preprocess(pil_image).unsqueeze(0).to(self.device)
+#             image_features = F.normalize(self.clip_model.encode_image(image))
+#             img_set.append(image_features)
+#             txt_set.append(txt_feature)
+
+#         txt_features = torch.cat(txt_set, 0).float()  # [image_num, feature_dim]
+#         img_features = torch.cat(img_set, 0).float()  # [image_num, feature_dim]
+#         rewards = torch.sum(torch.mul(txt_features, img_features), dim=1, keepdim=True)
+#         rewards = torch.squeeze(rewards)
+#         _, rank = torch.sort(rewards, dim=0, descending=True)
+#         _, indices = torch.sort(rank, dim=0)
+#         indices = indices + 1
+
+#         return indices.detach().cpu().numpy().tolist(), rewards.detach().cpu().numpy().tolist()
+
+#     def features(self, prompt, image, aes_type='v2'):
+
+#         # text encode
+#         text = clip.tokenize(prompt, truncate=True).to(self.device)
+#         txt_features = F.normalize(self.clip_model.encode_text(text))
+
+#         # image encode
+#         if isinstance(image, Image.Image):
+#             pil_image = image
+#         elif isinstance(image, str):
+#             if os.path.isfile(image):
+#                 pil_image = Image.open(image)
+#         image = self.preprocess(pil_image).unsqueeze(0).to(self.device)
+#         image_features = F.normalize(self.clip_model.encode_image(image))
+
+#         return txt_features, image_features
+
+
+# class ClipDiscriminator(BaseDiscriminator):
+#     def __init__(self, manager, name, weight, loss_func, input_type='embedding'):
+#         self.manager = manager
+#         self.name = name
+#         self.weight = weight
+#         self.loss_func = loss_func
+#         self.input_type = input_type
+#         self.device = manager.device
+#         #manager.add_discriminator(name, self)
+        
+#     def __init__(self, manager, name, weight, loss_func):
+#         super().__init__(manager, name, weight, loss_func)
+        
+#     def compute_scores(self, embeddings):
+#         return 5 * torch.nn.functional.cosine_similarity(embeddings, self.embedding, dim=-1)
+
+
+
+
+
+
+
+
 
 class BaseDiscriminator:
     def __init__(self, manager, name, weight, loss_func, input_type='embedding'):
@@ -325,7 +571,14 @@ class AestheticDiscriminator(BaseDiscriminator):
         self.model = model.to(self.device)
 
     def compute_scores(self, embeddings):
-        return self.model(embeddings).squeeze() / 10
+        print('embeddings.size()')
+        print(embeddings.size())
+        embeddings = self.model(embeddings).squeeze() / 10
+        print('embeddings.size()')
+        print(embeddings.size())
+        print('embeddings')
+        print(embeddings)
+        return embeddings
 
 class ClassifierDiscriminator(BaseDiscriminator):
     def __init__(self, manager, name, weight, loss_func, model):
@@ -339,6 +592,93 @@ class FunctionDiscriminator(BaseDiscriminator):
     def __init__(self, manager, name, weight, loss_func, score_func, input_type='noise'):
         super().__init__(manager, name, weight, loss_func, input_type=input_type)
         self.compute_scores = score_func
+
+class ImageRewardDiscriminator(BaseDiscriminator):
+    def __init__(self, manager, name, weight, loss_func, model, config, input_type):
+        super().__init__(manager, name, weight, loss_func, input_type)
+        self.model = ImageRewardModel(model, config, manager.device)
+
+    def compute_scores(self, image_preprocessed, captions):
+        text_inputs = do(lambda: [self.model.blip.tokenizer(prompt, padding='max_length', truncation=True, max_length=225, return_tensors="pt").to(self.device) for prompt in captions], label='text_inputs')
+        image_preprocessed = image_preprocessed.to(self.device)
+        image_embeds = do(lambda: self.model.blip.visual_encoder(image_preprocessed), target=image_preprocessed, label='image_embeds')
+        txt_features_set = []
+        
+        for i, text_input in enumerate(text_inputs):
+            img_embed = do(lambda: image_embeds[i, :, :].unsqueeze(0), label='img_embed')
+            sequence_length = do(lambda: text_input.input_ids.size(1), label='sequence_length')
+            encoder_sequence_length = do(lambda: img_embed.size(1), label='encoder_sequence_length')
+            image_atts = do(lambda: torch.ones((1, sequence_length, encoder_sequence_length), dtype=torch.long).to(self.device), label='image_atts')
+            text_output = do(lambda: self.model.blip.text_encoder(
+                text_input.input_ids,
+                attention_mask=text_input.attention_mask,
+                encoder_hidden_states=img_embed,
+                encoder_attention_mask=image_atts,
+                return_dict=True),
+                label='text_output'
+            )
+            txt_features = do(lambda: text_output.last_hidden_state[:, 0, :].float())
+            txt_features_set.append(txt_features)
+
+        # Concatenate text features from all examples
+        txt_features_batch = do(lambda: torch.cat(txt_features_set, 0))
+        score = do(lambda: self.model.mlp(txt_features_batch))
+        score = do(lambda: (score - self.model.mean) / self.model.std)
+        score = do(lambda: score.squeeze())
+        return score
+
+class BLIPScoreDiscriminator(BaseDiscriminator):
+    def __init__(self, manager, name, weight, loss_func, blip_model, config, input_type):
+        super().__init__(manager, name, weight, loss_func, input_type)
+        blip = BLIP_Pretrain(image_size=224, vit='large', config=config)
+        blip, _ = load_checkpoint(blip, blip_model)
+        self.blip = blip
+        self.blip.to(manager.device)
+
+    def compute_scores(self, image_preprocessed, captions):
+        text_inputs = [self.blip.tokenizer(prompt, padding='max_length', truncation=True, max_length=75, return_tensors="pt").to(self.blip.device) for prompt in captions]
+        image_preprocessed = image_preprocessed.to(self.blip.device)
+        image_embeds = self.blip.visual_encoder(image_preprocessed)
+        txt_set = []
+        img_set = []
+
+        for i, text_input in enumerate(text_inputs):
+            text_output = self.blip.text_encoder(text_input.input_ids, attention_mask=text_input.attention_mask, mode='text')
+            txt_feature = F.normalize(self.blip.text_proj(text_output.last_hidden_state[:, 0, :]))
+            image_feature = F.normalize(self.blip.vision_proj(image_embeds[i, 0, :]), dim=-1)
+            image_feature = image_feature.unsqueeze(0)
+            img_set.append(image_feature)
+            txt_set.append(txt_feature)
+            
+        txt_features = torch.cat(txt_set, 0).float()
+        img_features = torch.cat(img_set, 0).float()
+        rewards = torch.sum(torch.mul(txt_features, img_features), dim=1, keepdim=True)
+        score = rewards
+        score = score.squeeze()
+        return score
+
+class CLIPScoreDiscriminator(BaseDiscriminator):
+    def __init__(self, manager, name, weight, loss_func, clip_model, input_type):
+        super().__init__(manager, name, weight, loss_func, input_type)
+        self.clip_model, self.preprocess = clip.load(clip_model, device=manager.device, jit=False)
+        self.clip_model.logit_scale.requires_grad_(False)
+
+    def compute_scores(self, image_preprocessed, captions):
+        txt_set = []
+        img_set = []
+        for i, prompt in enumerate(captions):
+            text_input = clip.tokenize(prompt, truncate=True).to(self.device)
+            txt_feature = F.normalize(self.clip_model.encode_text(text_input), dim=-1)
+            img_feature = F.normalize(self.clip_model.encode_image(image_preprocessed[i].unsqueeze(0)), dim=-1)
+            txt_set.append(txt_feature)
+            img_set.append(img_feature)
+        
+        txt_features = torch.cat(txt_set, 0)
+        img_features = torch.cat(img_set, 0)
+        rewards = torch.sum(torch.mul(txt_features, img_features), dim=1, keepdim=True)
+        scores = rewards
+        scores = scores.squeeze()
+        return scores
 
 #from skimage.feature import greycomatrix, greycoprops
 #from skimage.feature import local_binary_pattern
@@ -530,6 +870,9 @@ class DiscriminatorManager:
             self.vae_model = AutoencoderTiny.from_pretrained("madebyollin/taesd", torch_dtype=torch.float16).to(device)
             
         self.add_aesthetics(self.config_json["aesthetics"])
+        self.add_blipscores(self.config_json["blipScores"])
+        self.add_clipscores(self.config_json["clipScores"])
+        self.add_image_rewards(self.config_json["imageRewards"])
         self.add_functions(self.config_json["functions"])
         self.add_embeddings(self.config_json["embeddings"])
         self.add_embedding_texts(self.config_json["embeddingTexts"])
@@ -562,8 +905,96 @@ class DiscriminatorManager:
                 aesthetic["priority"],
                 self.classifier_lambda(aesthetic),
                 model_type(aesthetic["filePath"])
-            )
+            )  
             
+    def add_blipscores(self, blipscores):
+        config_obj = {
+            "architectures": [
+                "BertModel"
+            ],
+            "attention_probs_dropout_prob": 0.1,
+            "hidden_act": "gelu",
+            "hidden_dropout_prob": 0.1,
+            "hidden_size": 768,
+            "initializer_range": 0.02,
+            "intermediate_size": 3072,
+            "layer_norm_eps": 1e-12,
+            "max_position_embeddings": 512,
+            "model_type": "bert",
+            "num_attention_heads": 12,
+            "num_hidden_layers": 12,
+            "pad_token_id": 0,
+            "type_vocab_size": 2,
+            "vocab_size": 30524,
+            "encoder_width": 768,
+            "add_cross_attention": True   
+        }
+
+        for blipscore in blipscores:
+            # Write config to a temporary file
+            with tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.json') as tmp:
+                json.dump(config_obj, tmp)
+                tmp_path = tmp.name
+
+            # Now tmp_path is the file path to the temporary file containing the config
+            self.add_blipscore(
+                blipscore["name"],
+                blipscore["priority"],
+                self.classifier_lambda(blipscore),
+                blipscore["filePath"],
+                tmp_path,
+                blipscore["input_type"]
+            )  
+            
+    def add_clipscores(self, clipscores):
+        for clipscore in clipscores:
+            self.add_clipscore(
+                clipscore["name"],
+                clipscore["priority"],
+                self.classifier_lambda(clipscore),
+                clipscore["filePath"],
+                clipscore["input_type"]
+            )
+ 
+    def add_image_rewards(self, imagerewards):
+        config_obj = {
+            "architectures": [
+                "BertModel"
+            ],
+            "attention_probs_dropout_prob": 0.1,
+            "hidden_act": "gelu",
+            "hidden_dropout_prob": 0.1,
+            "hidden_size": 768,
+            "initializer_range": 0.02,
+            "intermediate_size": 3072,
+            "layer_norm_eps": 1e-12,
+            "max_position_embeddings": 512,
+            "model_type": "bert",
+            "num_attention_heads": 12,
+            "num_hidden_layers": 12,
+            "pad_token_id": 0,
+            "type_vocab_size": 2,
+            "vocab_size": 30524,
+            "encoder_width": 768,
+            "add_cross_attention": True   
+        }
+  
+        for imagereward in imagerewards:
+            # Write config to a temporary file
+            with tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.json') as tmp:
+                json.dump(config_obj, tmp)
+                tmp_path = tmp.name
+
+            # Now tmp_path is the file path to the temporary file containing the config
+            self.add_image_reward(
+                imagereward["name"],
+                imagereward["priority"],
+                self.classifier_lambda(imagereward),
+                imagereward["filePath"],
+                tmp_path,
+                imagereward["input_type"]
+            )
+    
     def add_functions(self, functions):
         for function in functions:
             if "NoiseAnalysis" in function["functionType"]:
@@ -654,6 +1085,21 @@ class DiscriminatorManager:
     def add_function(self, name, weight, loss_func, score_func, input_type):
         self.discriminators[name] = FunctionDiscriminator(self, name, weight, loss_func, score_func, input_type)
 
+    def add_image_reward(self, name, weight, loss_func, model, config, input_type):
+        self.discriminators[name] = ImageRewardDiscriminator(self, name, weight, loss_func, model, config, input_type)
+
+    def add_blipscore(self, name, weight, loss_func, model, config, input_type):
+        self.discriminators[name] = BLIPScoreDiscriminator(self, name, weight, loss_func, model, config, input_type)
+
+    def add_clipscore(self, name, weight, loss_func, model, input_type):
+        self.discriminators[name] = CLIPScoreDiscriminator(self, name, weight, loss_func, model, input_type)
+
+
+
+
+
+
+
     def remove_noise(
         #noise_scheduler,
         self,
@@ -694,31 +1140,30 @@ class DiscriminatorManager:
         # Step 4: Multiply the original losses by the inverse scaling factor
         return loss * scaling_factors
 
-    def apply_discriminator_losses(self, base_loss, timesteps, original_latents, noise, noisy_latents, noise_pred, step, output_name, output_dir):
+    def apply_discriminator_losses(self, base_loss, timesteps, original_latents, noise, noisy_latents, noise_pred, step, output_name, output_dir, captions):
         
-        def compute_discriminator_loss(discriminator, discriminator_name, original, denoised, timesteps, all_diagnostics):
+        def compute_discriminator_loss(discriminator, discriminator_name, original, denoised, timesteps, base_loss, captions):
             import contextlib
             @contextlib.contextmanager
             def conditional_grad(input_type):
                 if input_type in self.gradient_types:
-                #     with torch.enable_grad():
-                #         yield
-                # else:
                     with torch.no_grad():
                         yield
+                else:
+                    yield
 
             with torch.no_grad():
-                original_scores = discriminator.compute_scores(original[discriminator.input_type])
-                
-            # with ThreadPoolExecutor() as executor:
-            #     original_future = executor.submit(discriminator.compute_scores, original[discriminator.input_type])
-            #     denoised_future = executor.submit(discriminator.compute_scores, denoised[discriminator.input_type])
-            #     original_scores = original_future.result()
-            #     denoised_scores = denoised_future.result()
+                if 'captions' in signature(discriminator.compute_scores).parameters:
+                    original_scores = discriminator.compute_scores(original[discriminator.input_type], captions)
+                else:
+                    original_scores = discriminator.compute_scores(original[discriminator.input_type])
+          
 
             with conditional_grad(discriminator.input_type):       
-                ### original_scores = discriminator.compute_scores(original[discriminator.input_type])
-                denoised_scores = discriminator.compute_scores(denoised[discriminator.input_type])
+                if 'captions' in signature(discriminator.compute_scores).parameters:
+                    denoised_scores = discriminator.compute_scores(denoised[discriminator.input_type], captions)
+                else:
+                    denoised_scores = discriminator.compute_scores(denoised[discriminator.input_type])
                 discriminator_loss = discriminator.loss_func(original_scores, denoised_scores)
 
                 """
@@ -727,6 +1172,10 @@ class DiscriminatorManager:
                 debias = 1 / SNR^0.5
                 debias = sqrt((1-Q)/Q)
                 """            
+                """            
+                ### if discriminator.input_type != 'noise':
+                ###     discriminator_loss = self.scale_losses(discriminator_loss, timesteps)
+                """
                 ### if discriminator.input_type != 'noise':
                 ###     discriminator_loss = self.scale_losses(discriminator_loss, timesteps)
                 discriminator_loss *= discriminator.weight
@@ -753,22 +1202,37 @@ class DiscriminatorManager:
             with ThreadPoolExecutor() as executor:
                 futures = []
                 for discriminator_name, discriminator in self.discriminators.items():
-                    args = (discriminator, discriminator_name, original, denoised, timesteps, base_loss)
+                    args = (discriminator, discriminator_name, original, denoised, timesteps, base_loss, captions)
                     future = executor.submit(compute_discriminator_loss, *args)
                     futures.append(future)
                 
                 all_diagnostics = []
+                total_batches = 0
                 gradient_loss = 0
                 ungradient_loss = 0
                 for future in futures:
                     discriminator_loss, discriminator, diagnostics = future.result()
                     if discriminator.input_type in self.gradient_types:
                         with torch.enable_grad():
-                            gradient_loss += discriminator_loss.item()
+                            if discriminator_loss.ndim == 0:  # Check if tensor is scalar
+                                gradient_loss += discriminator_loss
+                                total_batches += 1
+                            else:
+                                gradient_loss += discriminator_loss.sum()
+                                total_batches += discriminator_loss.size(0)
                     else:
-                        ungradient_loss += discriminator_loss.item()
+                        if discriminator_loss.ndim == 0:  # Check if tensor is scalar
+                            ungradient_loss += discriminator_loss
+                            total_batches += 1
+                        else:
+                            ungradient_loss += discriminator_loss.sum()
+                            total_batches += discriminator_loss.size(0)
                     all_diagnostics.extend(diagnostics)
-                
+
+                # Normalize the losses by the number of batches
+                if total_batches > 0:
+                    gradient_loss /= total_batches
+                    ungradient_loss /= total_batches
 
             # Pivoting and displaying the data
             if self.print_diagnostics:
@@ -871,8 +1335,11 @@ class DiscriminatorManager:
     # Inside DiscriminatorManager
     def _process_batch(self, original, denoised, step, timesteps, output_name, output_dir):
         original["decode"], denoised["decode"] = self._decode_latents(original["latent"], denoised["latent"])
+        original["preprocess"], denoised["preprocess"] = self._get_processed_images(original["decode"], denoised["decode"])
+        original["embedding"], denoised["embedding"] = self._get_image_embeddings(original["preprocess"], denoised["preprocess"])
+        
         self._save_image_pairs(original["decode"], denoised["decode"], step, timesteps, output_name, output_dir)
-        original["embedding"], denoised["embedding"] = self._get_image_embeddings(original["decode"], denoised["decode"])
+        
         original["decode"].cpu()
         denoised["decode"].cpu()
 
@@ -903,24 +1370,34 @@ class DiscriminatorManager:
             return torch.cat(decodes, dim=0)
 
         return decode_latents_single(original_latents), decode_latents_single(denoised_latents)
+    
+    def _transform(self, n_px):
+        return transforms.Compose([
+            transforms.Resize(n_px, interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+            transforms.CenterCrop(n_px),
+            # lambda image: image.convert("RGB"),
+            # Custom normalization for tensors in the range [0, 255]
+            transforms.Lambda(lambda x: x.float() / 255.0),
+            # ToTensor(),
+            transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
+        ]) 
 
-    def _get_image_embeddings(self, original_images: torch.Tensor, denoised_images: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        def _transform(n_px):
-            return transforms.Compose([
-                transforms.Resize(n_px, interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
-                transforms.CenterCrop(n_px),
-                # Custom normalization for tensors in the range [0, 255]
-                transforms.Lambda(lambda x: x.float() / 255.0),
-                transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
-            ])
+    def _get_processed_images(self, original_images: torch.Tensor, denoised_images: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         def get_embeddings(images):
+            if len(images.shape) != 4 or images.shape[1] != 3:
+                raise ValueError("Input images must be a 4D tensor with shape (B, 3, H, W)")
             preprocessed_images = preprocess(images)
+            return preprocessed_images
+
+        preprocess = self._transform(224) # input size for ViT-L/14
+        return get_embeddings(original_images), get_embeddings(denoised_images)
+
+
+    def _get_image_embeddings(self, original_images: torch.Tensor, denoised_images: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:           
+        def get_embeddings(preprocessed_images):
             embeddings = clip_model.encode_image(preprocessed_images)
             return embeddings / embeddings.norm(dim=-1, keepdim=True)
-
         clip_model, _ = self.vit_model
-        preprocess = _transform(224) # input size for ViT-L/14
-
         return get_embeddings(original_images), get_embeddings(denoised_images)
 
     def _save_image_pairs(self, original_images, denoised_images, step, timesteps, output_name, output_dir):
