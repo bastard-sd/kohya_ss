@@ -1021,13 +1021,11 @@ def run_cmd_advanced_training(**kwargs):
         run_cmd += f' --min_snr_gamma={min_snr_gamma}'
 
     min_timestep = int(kwargs.get('min_timestep', 0))
-    run_cmd += f' --min_timestep={min_timestep}'
 
     save_precision = kwargs.get("save_precision")
     if save_precision:
         run_cmd += f' --save_precision="{save_precision}"'
     max_timestep = int(kwargs.get('max_timestep', 1000))
-    run_cmd += f' --max_timestep={max_timestep}'
 
     save_state = kwargs.get("save_state")
     if save_state:
