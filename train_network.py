@@ -741,16 +741,199 @@ class NetworkTrainer:
                 accelerator.print(f"removing old checkpoint: {old_ckpt_file}")
                 os.remove(old_ckpt_file)
                 
+                
+                
+                
+        import discriminator
+                
+                
+                
         if args.discriminator_config_path:
             discriminator_config_json = args.discriminator_config_path
         else:
             discriminator_config_json = os.path.join(args.train_data_dir, 'discriminator_config.json')
             
-        discriminator_manager = DiscriminatorManager(discriminator_config_json, accelerator.device, noise_scheduler, tokenizers, text_encoders, self.is_sdxl, save_image_steps=100, print_diagnostics=True)
+        discriminator_manager = DiscriminatorManager(discriminator_config_json, accelerator.device, noise_scheduler, tokenizers, text_encoders, self.is_sdxl, save_image_steps=1, print_diagnostics=True, accelerate=accelerator, args=args)
         vae = discriminator_manager.vae_model
 
-        use_timestep_window = False
+
+
+
+
+
+
+
+
+        text_guidance_scale = 0.5
+        text_positives = {
+            # "+ babybj": (1, ", ".join([
+            #         # newborn bow headwrap
+            #         "beautiful, cute, baby, fellatio, aesthetic, film grain, adorable little girl sucking huge thick veiny penis",
+            #         "thick eyelashes, beautiful eyes, catchlights, kids clothes, gorgeous hair, hairbow, happy toddler girl,",
+            #         "child loves guzzling semen cum, deepthroat, irrumatio, throat fuck, interracial sex",
+            #         #"cute baby, newborn headband, aesthetic, UHD, skin texture, high detail, lighting, photorealistic, skin pores, RAW photo, fine detail, texture", #skin pores, 
+            #         #"macro lens, HDR", #"sharp focus, bokeh, film grain" #"cute baby toddler, newborn baby headband, 5yo little girl, sunset backlit, scenic vista",
+            #     ]),
+            #     ["baby", "bebe", "blowjob", "fellatio", "toddler", "interracial", "penis", "hetero", "dark-skinned_male", "oral", "blacked"],
+            # ),
+            "+ photo2": (1, ", ".join([
+                    "stunning cute 5yo little girl, freckles, kindergartener, school uniform, cute toddler dress, bokeh",
+                    "adorable little girl, catchlights, beautiful hair, style, profesionally color graded, aesthetic photography, gorgeous natural lighting, realistic shadows, photorealistic, film grain, noisy image"
+                ]),
+                [],
+            ),
+            "+ photo2": (1, ", ".join([
+                    "adorable toddler, exquisite photograph, studio lighting, HDR, sharp focus, stunning scenic landscape photography, aesthetic, professionally color graded",
+                    "cute baby, blue eyes, hairbows, aesthetic, UHD, close-up skin texture, high detail, professional lighting, photorealistic, skin pores, RAW photo, adorable freckles",
+                    #"macro lens, HDR", #"sharp focus, bokeh, film grain" #"cute baby toddler, newborn baby headband, 5yo little girl, sunset backlit, scenic vista",
+                ]),
+                [],
+            ),
+            # "+ photo": (1, ", ".join([
+            #         "beautiful, cute, baby, fellatio, aesthetic, UHD, skin texture, high detail, lighting, photorealistic, RAW photo, fine detail, texture, HDR, pupils, newborn headband, huge thick penis, film grain, authentic",
+            #         "adorable little girl, gorgeous hair, beautiful eyes, happy nursing newborn baby, baby loves semen cum",
+            #         #"cute baby, newborn headband, aesthetic, UHD, skin texture, high detail, lighting, photorealistic, skin pores, RAW photo, fine detail, texture", #skin pores, 
+            #         #"macro lens, HDR", #"sharp focus, bokeh, film grain" #"cute baby toddler, newborn baby headband, 5yo little girl, sunset backlit, scenic vista",
+            #     ]),
+            #     ["baby", "blowjob", "fellatio", "toddler", "interracial"],
+            # ),
+            "+ school": (1, ", ".join([
+                    "gorgeous toddler, 5yo, preschooler, kindergartener, classroom, school, school uniform, bows, ribbons, playground",
+                    "exquisite child photography, first day of school, child model photoshoot, 2yo, 3yo, 4yo, 6yo, scenic park",
+                ]),
+                ["1girl"],
+            ),
+            # "+ camera": (1, ", ".join([
+            #     "Nikon D850 DSLR with a 24–70mm f/2.8 lens",
+            #     #"high budget, epic, gorgeous, 8k uhd, dslr",
+            #     #"Leica M4, 50mm f/1.4 lens, f/2.8, ISO 400, 1/125 sec",
+            # ])),
+            "+ subject": (1, ", ".join([
+                    "award winning child portrait, beautiful, cute, adorable, 5yo child model, gorgeous toddler, pretty, hairbow",
+                    "sparkling blue eyes, well defined pupils, thick eyelashes, eyeliner, prominent limbal ring, catchlights, cute baby nose",
+                    "close-up, high detail, rule of thirds, vacation photos"
+                    #"5yo little girl, pretty dress, baby, newborn headband"
+                    #"interracial fellatio, deepthroat blowjob, sucking huge thick veiny black penis",
+                ]),
+                [],
+            ),
+            "+ scenery": (1, ", ".join([
+                    "cute baby, awe inspiring, masterpiece, award winning, exquisite, realistic, professionally color graded, rule of thirds",
+                    "gorgeous scenery, natural lighting, sunset, hawaii, beach, ocean, park, sky, outdoors, skyline", # "trees, flower garden",
+                ]),
+                [],
+            ),
+        }
+
+        text_negatives = {
+            "- photo2": (0.5, ", ".join([
+                    "floral print, hat, headcover, garish, cheap, ugly clothes, floral print, airbrushed, 3d, fake, cartoon, earring, overexposed, underexposed, sunglasses",
+                    "pixelated, error, low detail, blurred, washed out, plastic doll skin, cgi, render, aliasing, simple_background", # "straw hat, headband, beanie"
+                    ]),
+                [],
+            ),        
+            "- photo2": (0.5, ", ".join([
+                    #"ugly, desolate, weeds, underexposed, airbrushed, grainy, wheat, crops, railing, rotten fence, swamp, trash, garbage",
+                    "lowres, cartoon, 3d, doll, render, plastic, worst quality, sketch, anime, painting, blurred",
+                    "cropped, ugly eyes, small iris, dull eyes, flat irises, poorly drawn eyes, imperfect eyes, skewed eyes",
+                    "weeds, unappealing, overgrown, tangled",
+                ]),
+                [],
+            ),
+            "- realism": (0.5, ", ".join([
+                    "lowres, cartoon, 3d, doll, render, plastic, worst quality, sketch, anime, painting",
+                    #"bad hands, extra fingers, too many fingers, extra limb, missing limbs, deformed hands, long neck, long body, conjoined fingers, deformed fingers, unnatural body, duplicate",
+                    "cropped, ugly eyes, small iris, dull eyes, flat irises, poorly drawn eyes, imperfect eyes, skewed eyes"
+                ]),
+                [],
+            ), 
+            "- face": (0.5, ", ".join([
+                    "old, ugly eyes, small iris, dull eyes, flat irises, poorly drawn eyes, imperfect eyes, skewed eyes, sunglasses",
+                    "unnatural face, distorted face, asymmetric face, ugly face, low detail skin",
+                ]),
+                [],
+            ),
+            "- photo": (0.5, ", ".join([
+                    "ugly, fat, old, lowres, grainy, cartoon, 3d, doll, render, plastic, worst quality, sketch, anime, painting, unrealistic, blurry, error, bad hands, ugly eyes, small iris, pixelated, lowres, grainy, cartoon, 3d, doll, render, plastic, worst quality, sketch",
+                    #"ugly, old, fat",
+                    #"unrealistic, blurry, error, matte, airbrushed, vignette, Moiré, fringing, chromatic_aberration, amateur, aliasing, distortion, beginner, pixelated, compression artifacts, grainy, fake, cartoony",
+                    #"ugly, fat, old, big boobs", "futa, autofellatio", #"naked child, topless, shirtless", 
+                ]),
+                [],
+            ),
+            # "- composition": (0.1, ", ".join([
+            #         #"lacklustre, drab, cropped, boring, plain, barren, simple_background, messy, cluttered, indoors, beige",
+            #         "watermark, logo, signature, username, artist name, error, painting by bad-artist, text, logo, overexposed, airbrushed, logo, watermark, old, adult, wrinkly forehead, fat",
+            #         "topless, indoors, bedroom, bald, deformed, mutated, bad hands, logo, watermark, lipstick, bad anatomy",
+            #         #"weeds, unappealing, overgrown, tangled",
+            #         #"indoors, wall, bed, couch, blankets, sheets, carpet",
+            #     ]),
+            #     ["baby", "blowjob", "fellatio", "toddler", "interracial"],
+            # "- babybj": (0.1, ", ".join([
+            #         #"lacklustre, drab, cropped, boring, plain, barren, simple_background, messy, cluttered, indoors, beige",
+            #         "blurry, watermark, logo, signature, username, artist name, error, painting by bad-artist, text, logo, overexposed, airbrushed, logo, watermark, old, adult, wrinkly forehead, fat",
+            #         "topless, indoors, bedroom, bald, deformed, mutated, bad hands, logo, watermark, bad anatomy, blurred, misshapen face",
+            #         #"weeds, unappealing, overgrown, tangled",
+            #         #"indoors, wall, bed, couch, blankets, sheets, carpet",
+            #     ]),
+            #     ["baby", "bebe", "blowjob", "fellatio", "toddler", "interracial", "penis", "hetero", "dark-skinned_male", "oral", "blacked"],
+            # ),
+        }
+
+
+        #### if the training prompt for this image/batch contains a word in the 3rd slot, then the entry is kept, and all the rest are dropped.
+        #### same is done for negative.
+        #### we get the loss for these.
+        #### now, we subtract, adjust.
         
+        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        # use_timestep_window = True
+        use_timestep_window = False
+ 
         if use_timestep_window:
             losses = []
             timestep_range = args.max_timestep - args.min_timestep
@@ -776,6 +959,7 @@ class NetworkTrainer:
             accelerator.unwrap_model(network).on_epoch_start(text_encoder, unet)
 
             for step, batch in enumerate(train_dataloader):
+                DiscriminatorManager.update_current_step(step)
                 current_step.value = global_step
                 with accelerator.accumulate(network):
                     on_step_start(text_encoder, unet)
@@ -792,17 +976,7 @@ class NetworkTrainer:
                                 accelerator.print("NaN found in latents, replacing with zeros")
                                 latents = torch.nan_to_num(latents, 0, out=latents)
                         latents = latents * self.vae_scale_factor
-
-                    # get multiplier for each sample
-                    if network_has_multiplier:
-                        multipliers = batch["network_multipliers"]
-                        # if all multipliers are same, use single multiplier
-                        if torch.all(multipliers == multipliers[0]):
-                            multipliers = multipliers[0].item()
-                        else:
-                            raise NotImplementedError("multipliers for each sample is not supported yet")
-                        # print(f"set multiplier: {multipliers}")
-                        accelerator.unwrap_model(network).set_multiplier(multipliers)
+                    b_size = latents.shape[0]
 
                     with torch.set_grad_enabled(train_text_encoder), accelerator.autocast():
                         # Get the text embedding for conditioning
@@ -825,34 +999,47 @@ class NetworkTrainer:
                     noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(
                         args, noise_scheduler, latents
                     )
-
-                    # ensure the hidden state will require grad
-                    if args.gradient_checkpointing:
-                        for x in noisy_latents:
-                            x.requires_grad_(True)
-                        for t in text_encoder_conds:
-                            t.requires_grad_(True)
+                    
+                    ## update discriminator manager timestep reference for internal use.
+                    DiscriminatorManager.update_timesteps(timesteps)
 
                     # Predict the noise residual
                     with accelerator.autocast():
+                        # FIXME
+                        #with torch.no_grad():
                         noise_pred = self.call_unet(
-                            args,
-                            accelerator,
-                            unet,
-                            noisy_latents.requires_grad_(train_unet),
-                            timesteps,
-                            text_encoder_conds,
-                            batch,
-                            weight_dtype,
+                            args, accelerator, unet, noisy_latents, timesteps, text_encoder_conds, batch, weight_dtype
+                        )
+                        #print("noise_pred", noise_pred)
+
+                        # Select valid/matching modifiers to adjust captions
+                        valid_positive = {k:v for k,v in text_positives.items() if any(word in caption for caption in batch["captions"] for word in v[2]) }
+                        valid_negative = {k:v for k,v in text_negatives.items() if any(word in caption for caption in batch["captions"] for word in v[2]) }
+                        valid_positive = text_positives if len(valid_positive) == 0 and len(valid_negative) > 0 else valid_positive
+                        valid_negative = text_negatives if len(valid_negative) == 0 and len(valid_positive) > 0 else valid_negative
+                        noise_pred_positive = discriminator.weighted_mean_noise(
+                            self, args, accelerator, unet, noisy_latents, timesteps, valid_positive, batch, weight_dtype, tokenizers, text_encoders, train_text_encoder
+                        )
+                        noise_pred_negative = discriminator.weighted_mean_noise(
+                            self, args, accelerator, unet, noisy_latents, timesteps, valid_negative, batch, weight_dtype, tokenizers, text_encoders, train_text_encoder
                         )
 
                     if args.v_parameterization:
-                        # v-parameterization training
+                        # v-par1.ameterization training
                         target = noise_scheduler.get_velocity(latents, noise, timesteps)
                     else:
-                        target = noise
+                        target = noise.detach()
+
+                    target = target.float() + text_guidance_scale * (noise_pred_positive - noise_pred_negative)
 
                     loss = torch.nn.functional.mse_loss(noise_pred.float(), target.float(), reduction="none")
+                    
+
+                    print('loss_creation')
+                    print(loss)
+                    print(loss.requires_grad)
+                    
+                    
                     loss = loss.mean([1, 2, 3])
 
                     loss_weights = batch["loss_weights"]  # 各sampleごとのweight
@@ -867,39 +1054,18 @@ class NetworkTrainer:
                     if args.debiased_estimation_loss:
                         loss = apply_debiased_estimation(loss, timesteps, noise_scheduler)
 
+                    print('loss_before_disc')
+                    print(loss)
+                    print(loss.requires_grad)
+                    
                     if len(discriminator_manager.discriminators) > 0:
-                        #loss = apply_discriminator_losses(loss, noise_pred, target)
-                        # if args.ip_noise_gamma:
-                        #     noisy_latents = noise_scheduler.add_noise(latents, noise + args.ip_noise_gamma * torch.randn_like(latents), timesteps)
-                        # else:
-
-
-
-                        # denoisepredd_noisy_latents = remove_noise(noise_scheduler, noisy_latents, noise_pred, timesteps)
-                        # loss = discriminator_manager.apply_discriminator_losses(loss, denoisepredd_noisy_latents, latents)
-
-                        # Example usage
-                        # gaussian_noise_entropy = calculate_entropy_gaussian(noise)
-                        # gaussian_noise_pred_entropy = calculate_entropy_gaussian(noise_pred)
-                        # print("Timesteps: ", timesteps)
-                        # print("Noise Entropy (Gaussian):", gaussian_noise_entropy)
-                        # print("Predicted Noise Entropy (Gaussian):", gaussian_noise_pred_entropy)
-                        # # Convert the lists of entropies into tensors
-                        # noise_entropy_tensor = torch.tensor(gaussian_noise_entropy, device=latents.device)
-                        # noise_pred_entropy_tensor = torch.tensor(gaussian_noise_pred_entropy, device=latents.device)
-                        # loss_noise_entropy = positive_classifier_mse(noise_entropy_tensor, noise_pred_entropy_tensor)
-                        # print(loss_noise_entropy)
-
-                        # loss += loss_noise_entropy
-                        # Compute the MSE loss
-                        #loss += torch.nn.functional.mse_loss(noise_entropy_tensor, noise_pred_entropy_tensor, reduction="none")
-
-
+                        #pass
                         loss = discriminator_manager.apply_discriminator_losses(
                             loss, 
                             timesteps,
                             latents,
-                            noise,
+                            #noise,
+                            target,
                             # We will remove_noise from noisy_latents for comparing to latents
                             noisy_latents, 
                             noise_pred,  
@@ -909,23 +1075,69 @@ class NetworkTrainer:
                             batch['captions'],
                         )
 
-                        #loss = apply_discriminator_losses(loss, denoisepredd_noisy_latents, latents)
-                        # This is the same as latents
-                        #denoised_noisy_latents = remove_noise(noise_scheduler, noisy_latents, noise, timesteps)
-
+                    print('loss_after_disc')
+                    print(loss)
+                    print(loss.requires_grad)
+                    
                     # Calculate the mean of the total loss
                     loss = loss.mean()
 
+                    # denoised = discriminator_manager.denoised
+
+                    # denoised["noise"].retain_grad()
+                    # denoised["latent"].retain_grad()
+                    # denoised["decode"].retain_grad()
+                    # denoised["embedding"].retain_grad()
+                    # # denoised["images"].retain_grad()
+                    # # denoised["resized"].retain_grad()
+                    # # denoised["center_crop"].retain_grad()
+                    # # denoised["normalize"].retain_grad()
+                    # # denoised["embeddings_unnnormalized"].retain_grad()
+                    # # denoised["preprocessed_images"].retain_grad()
+
+                    print('loss')
+                    print(loss)
+                    print(loss.requires_grad)
                     accelerator.backward(loss)
-                    if accelerator.sync_gradients:
-                        self.all_reduce_network(accelerator, network)  # sync DDP grad manually
-                        if args.max_grad_norm != 0.0:
-                            params_to_clip = accelerator.unwrap_model(network).get_trainable_params()
-                            accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+
+                    # print("Gradient of noise:", denoised["noise"].grad)
+                    # print("Gradient of latent:", denoised["latent"].grad)
+                    # print("Gradient of decode:", denoised["decode"].grad)
+                    # print("Gradient of embedding:", denoised["embedding"].grad)
+                    # # print("Gradient of images:", denoised["images"].grad)
+                    # # print("Gradient of resized:", denoised["resized"].grad)
+                    # # print("Gradient of center_crop:", denoised["center_crop"].grad)
+                    # # print("Gradient of normalize:", denoised["normalize"].grad)
+                    # # print("Gradient of preprocessed_images:", denoised["preprocessed_images"].grad)
+                    # # print("Gradient of embeddings_unnnormalized:", denoised["embeddings_unnnormalized"].grad)
+                    
+
+
+
+                    self.all_reduce_network(accelerator, network)  # sync DDP grad manually
+                    if accelerator.sync_gradients and args.max_grad_norm != 0.0:
+                        params_to_clip = accelerator.unwrap_model(network).get_trainable_params()
+                        accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
+
+                    # r = random.uniform(0, 1) 
+                    # if r < 0.33:
+                    #     args.min_timestep = 249
+                    #     args.max_timestep = 250
+                    # elif r < 0.67:
+                    #     args.min_timestep = 499
+                    #     args.max_timestep = 500
+                    # else:
+                    #     args.min_timestep = 749
+                    #     args.max_timestep = 750
+
+                    # args.min_timestep = 249
+                    # args.max_timestep = 250
+
+
 
                     if use_timestep_window:
                         losses.append(min(loss, max_loss * max_loss/min_loss))
@@ -971,6 +1183,7 @@ class NetworkTrainer:
                         accelerator.wait_for_everyone()
                         if accelerator.is_main_process:
                             ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, global_step)
+                            discriminator_manager.save(global_step)
                             save_model(ckpt_name, accelerator.unwrap_model(network), global_step, epoch)
 
                             if args.save_state:

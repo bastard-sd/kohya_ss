@@ -21,37 +21,37 @@ caption_tag_dropout_rate = 0.0
 batch_size = 1
 
   [[datasets.subsets]]
-  image_dir = "/home/user/data/training/Gigantism_v0/1_loli and giant"
+  image_dir = "/home/user/data/training/1_loli and giant"
   class_tokens = "loli and giant"
   num_repeats = 1
   is_reg = false
 
   [[datasets.subsets]]
-  image_dir = "/home/user/data/training/Gigantism_v0/1_sex scene"
+  image_dir = "/home/user/data/training/1_sex scene"
   class_tokens = "sex"
   num_repeats = 1
   is_reg = false
 
   [[datasets.subsets]]
-  image_dir = "/home/user/data/training/FamilyStyle_v1/1_family"
+  image_dir = "/home/user/data/training/1_family"
   class_tokens = "familystyle"
   num_repeats = 1
   is_reg = false
 
   [[datasets.subsets]]
-  image_dir = "/home/user/data/training/FamilyStyle_v1/1_kids"
+  image_dir = "/home/user/data/training/1_kids"
   class_tokens = "child kid girl"
   num_repeats = 1
   is_reg = false
 
   [[datasets.subsets]]
-  image_dir = "/home/user/data/training/FamilyStyle_v1/1_sexfeel"
+  image_dir = "/home/user/data/training/1_sexfeel"
   class_tokens = "sex"
   num_repeats = 1
   is_reg = false
 
   [[datasets.subsets]]
-  image_dir = "/home/user/data/training/PinkChildSex_v0/3_child sex"
+  image_dir = "/home/user/data/training/3_child sex"
   class_tokens = "sex"
   num_repeats = 10
   is_reg = false

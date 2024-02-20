@@ -1157,6 +1157,7 @@ def train_model_alt(
     caption_extension,
     enable_bucket,
     gradient_checkpointing,
+    fp8_base,
     full_fp16,
     no_token_padding,
     stop_text_encoder_training_pct,

@@ -47,6 +47,8 @@
       "additionalParameter": "noise"
     }
   ],
+  "gan": [
+  ],
   "embeddings": [
     {
       "name": "JuggernautNegative",

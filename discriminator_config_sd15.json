@@ -5,194 +5,524 @@
       "priority": 8,
       "classifierType": "positive_classifier_mse",
       "modelType": "AestheticModelReLU",
-      "filePath": ".\\0_bastard\\cute_layers[L1024, R, D0.3, L128, R, D0.2, L64, R, D0.1, L16, D0.01, L1]-v455_e0_l1p1067.pt"
+      "filePath": "./0_bastard/cute_v455_e0_l1p1067.pt"
     },
     {
       "name": "Aesthetic: ava+logos",
       "priority": 5,
       "classifierType": "positive_classifier_mse",
       "modelType": "AestheticModelReLU",
-      "filePath": ".\\0_bastard\\ava+logos-l14-reluMSE.pth"
+      "filePath": "./0_bastard/ava+logos-l14-reluMSE.pth"
     }
   ],
   "functions": [
     {
-      "name": "Sharpness",
-      "priority": 3,
+      "name": "kl1",
+      "priority": 1,
+      "classifierType": "predefined",
+      "classifierExpression": "NoiseAnalysis.pyramid_loss",
+      "functionType": "passthrough",
+      "additionalParameter": "noise"
+    },
+    {
+      "name": "kl_mv",
+      "priority": 0.75,
+      "classifierType": "predefined",
+      "classifierExpression": "kl_mv",
+      "functionType": "passthrough",
+      "additionalParameter": "noise"
+    },
+    {
+      "name": "antiblur",
+      "priority": 0.001,
+      "classifierType": "predefined",
+      "classifierExpression": "antiblur",
+      "functionType": "passthrough",
+      "additionalParameter": "noise"
+    },
+    {
+      "name": "kl_mvl",
+      "priority": 0.75,
+      "classifierType": "predefined",
+      "classifierExpression": "kl_mvl",
+      "functionType": "passthrough",
+      "additionalParameter": "latent"
+    },
+    {
+      "name": "kl_fft",
+      "priority": 0.0025,
+      "classifierType": "predefined",
+      "classifierExpression": "kl_fft",
+      "functionType": "fft_stack",
+      "additionalParameter": "noise"
+    },
+    {
+      "name": "batch_var",
+      "priority": 0.1,
+      "classifierType": "predefined",
+      "classifierExpression": "batch_var",
+      "functionType": "passthrough",
+      "additionalParameter": "noise"
+    },
+    {
+      "name": "batch_covar",
+      "priority": 0.1,
+      "classifierType": "predefined",
+      "classifierExpression": "batch_covar",
+      "functionType": "passthrough",
+      "additionalParameter": "noise"
+    },
+    {
+      "name": "batch_var_fft",
+      "priority": 0.05,
+      "classifierType": "predefined",
+      "classifierExpression": "batch_var_fft",
+      "functionType": "passthrough",
+      "additionalParameter": "noise"
+    },
+    {
+      "name": "batchdiff",
+      "priority": 0.01,
+      "classifierType": "predefined",
+      "classifierExpression": "batchdiff",
+      "functionType": "passthrough",
+      "additionalParameter": "noise"
+    },
+    {
+      "name": "batchdiff_alt",
+      "priority": 0.01,
+      "classifierType": "predefined",
+      "classifierExpression": "batchdiff_alt",
+      "functionType": "passthrough",
+      "additionalParameter": "noise"
+    },
+    {
+      "name": "reldiff",
+      "priority": 0.1,
+      "classifierType": "predefined",
+      "classifierExpression": "reldiff",
+      "functionType": "passthrough",
+      "additionalParameter": "noise"
+    },
+    {
+      "name": "kl_all",
+      "priority": 1,
+      "classifierType": "predefined",
+      "classifierExpression": "kl_all",
+      "functionType": "passthrough",
+      "additionalParameter": "noise"
+    },
+    {
+      "name": "kl1_fft",
+      "priority": 0.0001,
+      "classifierType": "predefined",
+      "classifierExpression": "kl1_fft",
+      "functionType": "fft_stack",
+      "additionalParameter": "noise"
+    },
+    {
+      "name": "kl_fft",
+      "priority": 1,
+      "classifierType": "predefined",
+      "classifierExpression": "kl_fft",
+      "functionType": "fft_stack",
+      "additionalParameter": "noise"
+    },
+    {
+      "name": "kl3c",
+      "priority": 0.11,
+      "classifierType": "kl3c",
+      "functionType": "passthrough",
+      "additionalParameter": "noise"
+    },
+    {
+      "name": "kl3g",
+      "priority": 0.11,
+      "classifierType": "kl3g",
+      "functionType": "passthrough",
+      "additionalParameter": "noise"
+    },
+    {
+      "name": "kl3gb",
+      "priority": 0.01389,
+      "classifierType": "kl3gb",
+      "functionType": "passthrough",
+      "additionalParameter": "noise"
+    },
+    {
+      "name": "kl4",
+      "priority": 0.0625,
+      "classifierType": "kl4",
+      "functionType": "passthrough",
+      "additionalParameter": "noise"
+    },
+    {
+      "name": "pixel",
+      "priority": 0.1,
+      "classifierType": "pixel",
+      "functionType": "passthrough",
+      "additionalParameter": "decode"
+    },
+    {
+      "name": "pixel",
+      "priority": 0.1,
+      "classifierType": "pixel",
+      "functionType": "passthrough",
+      "additionalParameter": "decode"
+    },
+    {
+      "name": "sat_pixel",
+      "priority": 0.05,
+      "classifierType": "sat_pixel",
+      "functionType": "sat_pixel",
+      "additionalParameter": "decode"
+    },
+    {
+      "name": "sat_pixel",
+      "priority": 0.05,
+      "classifierType": "sat_pixel",
+      "functionType": "sat_pixel",
+      "additionalParameter": "decode"
+    },
+    {
+      "name": "contrast",
+      "priority": 0.005,
+      "classifierType": "contrast",
+      "functionType": "contrast",
+      "additionalParameter": "decode"
+    },
+    {
+      "name": "kl_fft_n",
+      "priority": 0.01,
+      "classifierType": "kl_fft",
+      "functionType": "fft_stack_transpose_stack",
+      "additionalParameter": "noise"
+    },
+    {
+      "name": "kl_fft_l",
+      "priority": 0.01,
+      "classifierType": "kl_fft",
+      "functionType": "fft_stack_transpose_stack",
+      "additionalParameter": "latent"
+    },
+    {
+      "name": "kl_n2",
+      "priority": 0.1,
+      "classifierType": "kl_n2",
+      "functionType": "passthrough_float",
+      "additionalParameter": "noise"
+    },
+    {
+      "name": "kl_fft_n_alt",
+      "priority": 0.1,
+      "classifierType": "kl_fft_alt",
+      "functionType": "fft_stack_transpose_stack",
+      "additionalParameter": "noise"
+    },
+    {
+      "name": "kl_fft_l_alt",
+      "priority": 0.1,
+      "classifierType": "kl_fft_alt",
+      "functionType": "fft_stack_transpose_stack",
+      "additionalParameter": "latent"
+    },
+    {
+      "name": "sharp",
+      "priority": 0.1,
       "classifierType": "positive_classifier_mse",
       "functionType": "NoiseAnalysis.sharpness_tensor",
       "additionalParameter": "decode"
     },
     {
-      "name": "Entropy",
-      "priority": 1,
+      "name": "entropy",
+      "priority": 0.1,
       "classifierType": "positive_classifier_mse",
       "functionType": "NoiseAnalysis.entropy",
       "additionalParameter": "noise"
     },
     {
-      "name": "Kurtosis",
-      "priority": 1,
-      "classifierType": "custom",
-      "classifierExpression": "negative_loss_scale=-1",
+      "name": "mean",
+      "priority": 0.1,
+      "classifierType": "positive_classifier_mse",
+      "functionType": "NoiseAnalysis.mean",
+      "additionalParameter": "noise"
+    },
+    {
+      "name": "var",
+      "priority": 0.1,
+      "classifierType": "positive_classifier_mse",
+      "functionType": "NoiseAnalysis.variance",
+      "additionalParameter": "noise"
+    },
+    {
+      "name": "kurtosis",
+      "priority": 0.1,
+      "classifierType": "positive_classifier_mse",
       "functionType": " NoiseAnalysis.kurtosis",
       "additionalParameter": "noise"
     },
     {
-      "name": "Entropy - Kurtosis",
-      "priority": 1,
+      "name": "e-k",
+      "priority": 0.1,
       "classifierType": "positive_classifier_mse",
       "functionType": "custom",
       "functionExpression": "Entropy - Kurtosis",
       "additionalParameter": "noise"
+    },
+    {
+      "name": "con_g",
+      "priority": 1.0,
+      "classifierType": "con_g",
+      "functionType": "con_g",
+      "additionalParameter": "latent"
+    },
+    {
+      "name": "kl1_l",
+      "priority": 0.1,
+      "classifierType": "kl1_l",
+      "functionType": "kl1_l",
+      "additionalParameter": "latent"
+    },
+    {
+      "name": "sat_p",
+      "priority": 0.001,
+      "classifierType": "sat_p",
+      "functionType": "sat_p",
+      "additionalParameter": "latent"
+    },
+    {
+      "name": "con_p",
+      "priority": 0.5,
+      "classifierType": "con_p",
+      "functionType": "con_p",
+      "additionalParameter": "latent"
+    },
+    {
+      "name": "sat_g",
+      "priority": 0.1,
+      "classifierType": "sat_n",
+      "functionType": "sat_g",
+      "additionalParameter": "latent"
+    },
+    {
+      "name": "sat_2",
+      "priority": 0.01,
+      "classifierType": "sat_n",
+      "functionType": "sat_g",
+      "additionalParameter": "latent"
+    },
+    {
+      "name": "sat_3",
+      "priority": 0.01,
+      "classifierType": "sat_n",
+      "functionType": "sat_g",
+      "additionalParameter": "latent"
+    },
+    {
+      "name": "sat_4",
+      "priority": 0.01,
+      "classifierType": "sat_n",
+      "functionType": "sat_g",
+      "additionalParameter": "latent"
+    },
+    {
+      "name": "con_",
+      "priority": 0.01,
+      "classifierType": "sat_n",
+      "functionType": "con_n",
+      "additionalParameter": "latent"
+    },
+    {
+      "name": "kl_gabor_l",
+      "priority": 0.0001,
+      "classifierType": "kl_gabor_l",
+      "functionType": "kl_gabor_l",
+      "additionalParameter": "latent"
+    },
+    {
+      "name": "vit",
+      "priority": 5,
+      "classifierType": "vit",
+      "functionType": "passthrough",
+      "additionalParameter": "embedding"
+    },
+    {
+      "name": "edges",
+      "priority": 10,
+      "classifierType": "edges",
+      "functionType": "edges",
+      "additionalParameter": "decode"
+    },
+    {
+      "name": "ssim",
+      "priority": 0.001,
+      "classifierType": "ssim",
+      "functionType": "passthrough",
+      "additionalParameter": "latent"
+    },
+    {
+      "name": "ssim",
+      "priority": 0.001,
+      "classifierType": "ssim",
+      "functionType": "passthrough",
+      "additionalParameter": "latent"
+    }
+  ],
+  "gan": [
+    {
+      "name": "GAN",
+      "priority": 0.01,
+      "classifierType": "BCELoss",
+      "functionType": "gan",
+      "additionalParameter": "latent"
     }
   ],
   "embeddings": [
     {
       "name": "JuggernautNegative",
-      "priority": 1,
+      "priority": 3,
       "classifierType": "negative_classifier_mse",
       "embeddingType": "TextualInversionEmbed",
-      "filePath": ".\\path\\to\\JuggernautNegative-neg.pt"
+      "filePath": "./0_bastard/JuggernautNegative-neg.pt"
     },
     {
       "name": "BadDream",
-      "priority": 1,
+      "priority": 3,
       "classifierType": "negative_classifier_mse",
       "embeddingType": "TextualInversionEmbed",
-      "filePath": ".\\path\\to\\BadDream.pt"
+      "filePath": "./0_bastard/BadDream.pt"
     },
     {
       "name": "UnrealisticDream",
-      "priority": 1,
+      "priority": 3,
       "classifierType": "negative_classifier_mse",
       "embeddingType": "TextualInversionEmbed",
-      "filePath": ".\\path\\to\\UnrealisticDream.pt"
+      "filePath": "./0_bastard/UnrealisticDream.pt"
     },
     {
       "name": "easynegative",
-      "priority": 1,
+      "priority": 3,
       "classifierType": "negative_classifier_mse",
       "embeddingType": "TextualInversionEmbed",
-      "filePath": ".\\path\\to\\easynegative.safetensors"
+      "filePath": "./0_bastard/easynegative.safetensors"
     },
     {
       "name": "ng_deepnegative_v1_75t",
-      "priority": 1,
+      "priority": 3,
       "classifierType": "negative_classifier_mse",
       "embeddingType": "TextualInversionEmbed",
-      "filePath": ".\\path\\to\\ng_deepnegative_v1_75t.pt"
+      "filePath": "./0_bastard/ng_deepnegative_v1_75t.pt"
     },
     {
       "name": "BastardNegative_1",
-      "priority": 1,
+      "priority": 3,
       "classifierType": "negative_classifier_mse",
       "embeddingType": "TextualInversionEmbed",
-      "filePath": ".\\path\\to\\SD15.NEG_EMBED.b_negative_1.pt"
+      "filePath": "./0_bastard/SD15.NEG_EMBED.b_negative_1.pt"
     },
     {
       "name": "BastardNegative_2",
-      "priority": 1,
+      "priority": 3,
       "classifierType": "negative_classifier_mse",
       "embeddingType": "TextualInversionEmbed",
-      "filePath": ".\\path\\to\\SD15.NEG_EMBED.b_negative_2.pt"
+      "filePath": "./0_bastard/SD15.NEG_EMBED.b_negative_2.pt"
     },
     {
       "name": "BastardNegative_3",
-      "priority": 1,
+      "priority": 3,
       "classifierType": "negative_classifier_mse",
       "embeddingType": "TextualInversionEmbed",
-      "filePath": ".\\path\\to\\SD15.NEG_EMBED.b_negative_3.pt"
+      "filePath": "./0_bastard/SD15.NEG_EMBED.b_negative_3.pt"
     },
     {
       "name": "BastardNegative_4",
-      "priority": 1,
+      "priority": 3,
       "classifierType": "negative_classifier_mse",
       "embeddingType": "TextualInversionEmbed",
-      "filePath": ".\\path\\to\\SD15.NEG_EMBED.b_negative_4.pt"
+      "filePath": "./0_bastard/SD15.NEG_EMBED.b_negative_4.pt"
     },
     {
       "name": "BastardNegative_5",
-      "priority": 1,
+      "priority": 3,
       "classifierType": "negative_classifier_mse",
       "embeddingType": "TextualInversionEmbed",
-      "filePath": ".\\path\\to\\SD15.NEG_EMBED.b_negative_5.pt"
+      "filePath": "./0_bastard/SD15.NEG_EMBED.b_negative_5.pt"
     },
     {
       "name": "BastardNegative_6",
-      "priority": 1,
+      "priority": 3,
       "classifierType": "negative_classifier_mse",
       "embeddingType": "TextualInversionEmbed",
-      "filePath": ".\\path\\to\\SD15.NEG_EMBED.b_negative_6.pt"
+      "filePath": "./0_bastard/SD15.NEG_EMBED.b_negative_6.pt"
     },
     {
       "name": "BastardNegative_7",
-      "priority": 1,
+      "priority": 3,
       "classifierType": "negative_classifier_mse",
       "embeddingType": "TextualInversionEmbed",
-      "filePath": ".\\path\\to\\SD15.NEG_EMBED.b_negative_7.pt"
+      "filePath": "./0_bastard/SD15.NEG_EMBED.b_negative_7.pt"
     },
     {
       "name": "BastardNegative_8",
-      "priority": 1,
+      "priority": 3,
       "classifierType": "negative_classifier_mse",
       "embeddingType": "TextualInversionEmbed",
-      "filePath": ".\\path\\to\\SD15.NEG_EMBED.b_negative_8.pt"
+      "filePath": "./0_bastard/SD15.NEG_EMBED.b_negative_8.pt"
     },
     {
       "name": "BastardNegative_9",
-      "priority": 1,
+      "priority": 3,
       "classifierType": "negative_classifier_mse",
       "embeddingType": "TextualInversionEmbed",
-      "filePath": ".\\path\\to\\SD15.NEG_EMBED.b_negative_9.pt"
+      "filePath": "./0_bastard/SD15.NEG_EMBED.b_negative_9.pt"
     }
   ],
   "embeddingTexts": [
     {
       "name": "Positive: 1",
-      "priority": 1,
+      "priority": 3,
       "classifierType": "positive_classifier_mse",
       "text": "UHD, (skin texture), high detail, photorealistic, (skin pores), RAW photo, (sharp focus), film grain, fine detail, texture, macro lens, HDR",
       "multiToken": true
     },
     {
       "name": "Positive: 2",
-      "priority": 1,
+      "priority": 3,
       "classifierType": "positive_classifier_mse",
       "text": "(RAW photo), (8K:1.2), sharp, highres, absurdres",
       "multiToken": true
     },
     {
       "name": "Positive: 3",
-      "priority": 1,
+      "priority": 3,
       "classifierType": "negative_classifier_mse",
       "text": "(ultra realistic professional photograph shot on nikon canon iphone)",
       "multiToken": true
     },
     {
       "name": "Negative: 1",
-      "priority": 1,
+      "priority": 3,
       "classifierType": "negative_classifier_mse",
       "text": "lowres, blurred, low detail, jpg artifacts, error, blurry, airbrushed, smooth, interlaced, painting, watermark, logo, signature, username, artist name, carpet",
       "multiToken": true
     },
     {
       "name": "Negative: 2",
-      "priority": 1,
+      "priority": 3,
       "classifierType": "negative_classifier_mse",
       "text": "watermark, logo, signature, username, artist name, lowres, grainy, cartoon, doll, plastic, worst quality, sketch, anime, painting, unrealistic, blurry, jpg artifacts, compression artifacts",
       "multiToken": true
     },
     {
       "name": "Negative: 3",
-      "priority": 1,
+      "priority": 3,
       "classifierType": "negative_classifier_mse",
       "text": "conjoined fingers, deformed fingers, ugly eyes, small iris, dull eyes, flat irises, poorly drawn eyes, imperfect eyes, skewed eyes, unnatural face, unnatural body, error",
       "multiToken": true
     },
     {
       "name": "Negative: 4",
-      "priority": 1,
+      "priority": 3,
       "classifierType": "negative_classifier_mse",
       "text": "watermark, website address, url, logo, artist_name",
       "multiToken": true
@@ -219,7 +549,7 @@
   "clipScores": [
     {
       "name": "CLIP",
-      "priority": 3,
+      "priority": 5,
       "classifierType": "positive_classifier_mse",
       "filePath": ".//0_bastard//other//CLIP_ViT-L-14.pt",
       "input_type": "preprocess"
