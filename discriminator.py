@@ -83,6 +83,7 @@ from inspect import signature
 DEBUG = True
 
 timesteps = 1000
+step = 0
 
 def do(func, *args, target=None, label=None, **kwargs):
     if DEBUG:
@@ -725,10 +726,10 @@ class DiscriminatorManager:
         if is_sdxl:
             sdxl_model_util.VAE_SCALE_FACTOR = 1.0
             self.vae_scale_factor = 1.0
-            print('VAE = SDXL')
+            # print('VAE = SDXL')
             self.vae_model = AutoencoderTiny.from_pretrained("madebyollin/taesdxl", torch_dtype=torch.float16).to(device)
         else:
-            print('VAE = SD15')
+            # print('VAE = SD15')
             self.vae_model = AutoencoderTiny.from_pretrained("madebyollin/taesd", torch_dtype=torch.float16).to(device)
         
         clip_model, _ = self.vit_model
@@ -1154,8 +1155,10 @@ class DiscriminatorManager:
         
         
     @classmethod
-    def update_current_step(cls, step):
-        cls.step = step
+    def update_current_step(cls, curstep):
+        global step
+        cls.step = curstep
+        step = curstep
 
     def remove_noise(
         #noise_scheduler,
@@ -1292,7 +1295,7 @@ class DiscriminatorManager:
             #gradient_loss.requires_grad_()
             ungradient_loss = torch.zeros_like(base_loss)
             for discriminator_name, discriminator in self.discriminators.items():
-                print(discriminator_name)
+                # print(discriminator_name)
                 discriminator_loss, discriminator, diagnostics = compute_discriminator_loss(discriminator, discriminator_name, original, denoised, timesteps, base_loss, captions)
                 #print(discriminator_name, discriminator_loss)
                 if discriminator_loss.ndim == 0:
@@ -1357,11 +1360,11 @@ class DiscriminatorManager:
             base_loss_np = base_loss.cpu().numpy()
             timesteps_np = timesteps.cpu().numpy()
             
-            print('discriminator_loss_np.shape[0]')
-            print(discriminator_loss_np.shape[0])
-            print(timesteps_np.shape[0])
-            print(discriminator_loss)
-            print(timesteps)
+            # print('discriminator_loss_np.shape[0]')
+            # print(discriminator_loss_np.shape[0])
+            # print(timesteps_np.shape[0])
+            # print(discriminator_loss)
+            # print(timesteps)
 
             for i in range(discriminator_loss_np.shape[0]):
                 # Check if the scores are simple floats (ndim == 2 and size == 1 for 2nd dim)
@@ -1543,7 +1546,9 @@ class DiscriminatorManager:
         return original_embeddings, denoised_embeddings
 
     def _save_image_pairs(self, original_images, denoised_images):
-
+        # global step
+        # global timesteps
+        
         def _save_image_pair(index, original_tensor, denoised_tensor, save_dir, step, timesteps):
             original_pil = to_pil_image(original_tensor)
             denoised_pil = to_pil_image(denoised_tensor)
@@ -1557,9 +1562,8 @@ class DiscriminatorManager:
             combined_image.save(os.path.join(save_dir, filename))
 
         from threading import Thread
-        print('self.step % self.save_image_steps != 0')
-        print(self.step % self.save_image_steps != 0)
-        if self.step % self.save_image_steps != 0:
+
+        if step % self.save_image_steps != 0:
             return
 
         save_dir = os.path.join(self.args.output_dir, "sample_discriminator")
@@ -2406,7 +2410,7 @@ def gabor_filter(tensor, **kwargs):
     kernel_size=2
     kernel = NoiseAnalysis.gabor_kernel(kernel_size, **kwargs, device=tensor.device)
     # kernel = kernel.unsqueeze(0).unsqueeze(0)  # Add batch and channel dims
-    print(kernel.shape)  # Debug: Ensure shape is [1, 1, kernel_size, kernel_size]
+    # print(kernel.shape)  # Debug: Ensure shape is [1, 1, kernel_size, kernel_size]
 
     kernel = kernel.repeat(tensor.size(1), 1, 1, 1)  # Repeat kernel for each input channel
     
@@ -2624,10 +2628,10 @@ def multivariate_kl_diverg5ence_grid(tensor1_unchunked, tensor2_unchunked, num_c
 
         kl_div = 0.5 * (trace_term + mse_term + logdet_term)
         
-        print("{} MSE (obs)".format(purpose), ", ".join([f"{value:.5f}" for value in mse_term.mean(dim=[1]).tolist()]))
-        print("{} Trace (var)".format(purpose), ", ".join([f"{value:.5f}" for value in trace_term.mean(dim=[1]).tolist()]))
-        print("{} LogDet (cov)".format(purpose), ", ".join([f"{value:.5f}" for value in logdet_term.mean(dim=[1]).tolist()]))
-        print("{} KL-Divergence".format(purpose), ", ".join([f"{value:.5f}" for value in kl_div.mean(dim=[1]).tolist()]))
+        # print("{} MSE (obs)".format(purpose), ", ".join([f"{value:.5f}" for value in mse_term.mean(dim=[1]).tolist()]))
+        # print("{} Trace (var)".format(purpose), ", ".join([f"{value:.5f}" for value in trace_term.mean(dim=[1]).tolist()]))
+        # print("{} LogDet (cov)".format(purpose), ", ".join([f"{value:.5f}" for value in logdet_term.mean(dim=[1]).tolist()]))
+        # print("{} KL-Divergence".format(purpose), ", ".join([f"{value:.5f}" for value in kl_div.mean(dim=[1]).tolist()]))
         #print("{} Correlation".format(purpose), ", ".join([f"{value:.5f}" for value in correlation.mean(dim=[1]).tolist()]))
 
         return kl_div.mean(dim=1) # - correlation.mean(dim=1)
@@ -2812,7 +2816,7 @@ def batch_covar(label, pred, kernel_size=10):
     loss = torch.maximum(loss, torch.tensor(1e-5, device=loss.device))
     loss = loss.mean(dim=[1,2])
     loss *= torch.sigmoid(0.005 * (timesteps - 500)).detach()
-    print("batch_covar", loss)
+    # print("batch_covar", loss)
     return loss
 
 def batch_var(label, pred):
@@ -2822,7 +2826,7 @@ def batch_var(label, pred):
     loss = torch.minimum(loss, torch.tensor(1e-5, device=loss.device))
     loss = loss.mean(dim=[1,2]) 
     loss *= torch.sigmoid(0.005 * (timesteps - 500)).detach()
-    print("batch_var", loss)
+    # print("batch_var", loss)
     return loss
 
 
@@ -3069,10 +3073,10 @@ def multivariate_kl_divergence_grid(tensor1_unchunked, tensor2_unchunked, num_ch
 
         kl_div = 0.5 * (trace_term + mse_term + logdet_term)
         
-        print("{} MSE (obs)".format(purpose), ", ".join([f"{value:.5f}" for value in mse_term.mean(dim=[1]).tolist()]))
-        print("{} Trace (var)".format(purpose), ", ".join([f"{value:.5f}" for value in trace_term.mean(dim=[1]).tolist()]))
-        print("{} LogDet (cov)".format(purpose), ", ".join([f"{value:.5f}" for value in logdet_term.mean(dim=[1]).tolist()]))
-        print("{} KL-Divergence".format(purpose), ", ".join([f"{value:.5f}" for value in kl_div.mean(dim=[1]).tolist()]))
+        # print("{} MSE (obs)".format(purpose), ", ".join([f"{value:.5f}" for value in mse_term.mean(dim=[1]).tolist()]))
+        # print("{} Trace (var)".format(purpose), ", ".join([f"{value:.5f}" for value in trace_term.mean(dim=[1]).tolist()]))
+        # print("{} LogDet (cov)".format(purpose), ", ".join([f"{value:.5f}" for value in logdet_term.mean(dim=[1]).tolist()]))
+        # print("{} KL-Divergence".format(purpose), ", ".join([f"{value:.5f}" for value in kl_div.mean(dim=[1]).tolist()]))
         #print("{} Correlation".format(purpose), ", ".join([f"{value:.5f}" for value in correlation.mean(dim=[1]).tolist()]))
 
         return kl_div.mean(dim=1) # - correlation.mean(dim=1)
@@ -3156,6 +3160,53 @@ def multivariate_kl_divergence_grid(tensor1_unchunked, tensor2_unchunked, num_ch
     #     )          
 
     return kl_div
+
+
+
+def solve_noise(noise_scheduler, latents, noisy_latents, timesteps):
+    # Solve Noise s.t. 
+    alphas_cumprod = noise_scheduler.alphas_cumprod.to(device=noisy_latents.device, dtype=noisy_latents.dtype)
+    #timesteps = timesteps.to(noisy_latents.device)
+
+    sqrt_alpha_prod = alphas_cumprod[timesteps] ** 0.5
+    sqrt_alpha_prod = sqrt_alpha_prod.flatten()
+    while len(sqrt_alpha_prod.shape) < len(noisy_latents.shape):
+        sqrt_alpha_prod = sqrt_alpha_prod.unsqueeze(-1)
+
+    sqrt_one_minus_alpha_prod = (1 - alphas_cumprod[timesteps]) ** 0.5
+    sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.flatten()
+    while len(sqrt_one_minus_alpha_prod.shape) < len(noisy_latents.shape):
+        sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.unsqueeze(-1)
+
+    # Reverse the noise addition process
+    noise = (noisy_latents - latents * sqrt_alpha_prod) / sqrt_one_minus_alpha_prod
+
+    # Remove noise
+    #original_samples = (noisy_samples - sqrt_one_minus_alpha_prod * noise) / sqrt_alpha_prod
+    #print(sqrt_one_minus_alpha_prod)
+    return noise
+
+def gen_biased_noise(network, args, accelerator, unet, noisy_latents, timesteps, text_modifiers, batch, weight_dtype, tokenizers, text_encoders, train_text_encoder):
+    if len(text_modifiers) > 1 and text_guidance_scale > 0:
+        text_modifiers = {k:v for k,v in [random.choice(list(text_modifiers.items()))]}
+
+    with torch.no_grad():
+        # Calculate the total weight
+        weight_tot = sum(weight for _, (weight, _, _) in text_modifiers.items())
+
+        # Initialize tensor for the weighted sum
+        weighted_mean = 0
+
+        # Loop through each entry in text_positives
+        for _, (weight, text_modifier, valid_keyword_list) in text_modifiers.items():
+            result = call_unet_text(
+                network, args, accelerator, unet, noisy_latents, timesteps, text_modifier, batch, weight_dtype, tokenizers, text_encoders, train_text_encoder
+            )
+            weighted_mean += (weight / weight_tot) * result
+        return weighted_mean
+
+
+
 
 
 

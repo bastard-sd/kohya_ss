@@ -19,7 +19,7 @@ from library.ipex_interop import init_ipex
 init_ipex()
 
 from accelerate.utils import set_seed
-from diffusers import DDPMScheduler
+from diffusers import DDPMScheduler, DPMSolverMultistepScheduler
 from library import model_util
 
 import library.train_util as train_util
@@ -45,6 +45,7 @@ from library.custom_train_functions import (
 import sys
 from sdxl_gen_img import get_weighted_text_embeddings as get_weighted_sdxl_text_embeddings
 from discriminator import DiscriminatorManager
+import discriminator
 
 class NetworkTrainer:
     def __init__(self):
@@ -234,8 +235,8 @@ class NetworkTrainer:
         # text_encoder is List[CLIPTextModel] or CLIPTextModel
         text_encoders = text_encoder if isinstance(text_encoder, list) else [text_encoder]
 
-        noise_scheduler = DDPMScheduler(
-            beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, clip_sample=False
+        noise_scheduler = DPMSolverMultistepScheduler(
+            beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000
         )
         prepare_scheduler_for_custom_training(noise_scheduler, accelerator.device)
         custom_train_functions.fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler)
@@ -744,7 +745,9 @@ class NetworkTrainer:
                 
                 
                 
-        import discriminator
+                
+                
+                
                 
                 
                 
@@ -764,31 +767,233 @@ class NetworkTrainer:
 
 
 
-        text_guidance_scale = 0.5
+        quality = [
+            "aesthetic", "exquisite", "stunning", "breathtaking", "award-winning", "majestic", "unparalleled", "world-class",
+            "beautiful", "photogenic", "innovative", "visionary", "masterful", "legendary", "pioneering", "spectacular",
+            "sharp", "vibrant", "crisp", "detailed", "meticulous", "polished", "sophisticated", "refined", "iconic", "picturesque",
+            "pristine", "elegant", "sleek", "dynamic", "vivid", "luminous", "radiant", "harmonious", "balanced",  "opulent", 
+            "timeless", "immortal", "peerless", "sublime", "revolutionary", "photorealistic", "cinematic", "masterpiece", "master-class",
+        ]
+
+        emotional = [
+            "tranquil", "nostalgic", "atmospheric", "sumptuous", "serene", "emotionally moving", "idyllic",
+            "spellbinding", "ethereal", "poetic narrative", "expressive", "dramatic", "inviting", "inspiring",
+            "inspirational", "unique", "original", "evocative", "thrilling", "passionate", "mood", "ambiance",
+            "intimate", "soul-stirring", "heartwarming", "melancholic", "whimsical", "dreamy", "haunting",
+            "provocative", "sensual", "sentimental", "vibrant emotion", "touching", "rousing", "mysterious",
+            "enigmatic", "alluring", "bewitching", "charming", "lyrical", "magical", "otherworldly", "surreal",
+            "gripping", "compelling", "engrossing", "captivating", "mesmerizing", "enchanting", "ambient", "mystical",
+        ]
+
+        lighting = [
+            "natural lighting", "studio lighting", "sunset", "golden hour", "rim lighting", "filtered light",
+            "volumetric lighting", "backlighting", "twilight", "blue hour", "magic hour", "diffused lighting",
+            "soft shadows", "dappled light", "neon glow", "silhouette lighting", "mood lighting",
+            "key lighting", "fill lighting", "high-key lighting", "low-key lighting", "catch lights",
+            "butterfly lighting", "rembrandt lighting", "loop lighting", "broad lighting", "short lighting",
+            "split lighting", "kicker light", "hair light", "accent lighting", "cross lighting",
+            "bounce lighting", "side lighting", "soft light", "ambient lighting", "sculptural lighting",
+            "directional lighting", "spot lighting", "clamshell lighting", "beauty lighting",
+            "light painting", "continuous lighting", "LED panels", "softboxes", "umbrellas", "octaboxes", "ring flash",
+        ]
+
+        attractive = [
+            "cute", "adorable", "precious", "beautiful", "sweet", "glamorous", "angelic", "elegant", "radiant", 
+            "charming", "whimsical", "enigmatic", "alluring", "lovely", "stunning", "gorgeous", "bewitching", 
+            "enticing", "fetching", "graceful", "dazzling", "exquisite", "magnetic", "divine", "splendid", 
+            "winsome", "serene", "luminous", "vivacious", "lifelike", "fairylike", "angelic",
+            "dreamy", "svelte", "refined", "polished", "sophisticated", "sublime", "delightful", "enchanting", 
+            "irresistible", "impeccable", "breathtaking", "spellbinding",  "quaint", "chic", 
+            "sleek", "ravishing", "appealing", "enticing", "lush", "peppy", "spirited", "zesty", "vibrant"
+        ]
+        subjects = [f + " girl" for f in [
+            "cute little", "preschooler", "toddler", "kindergartener", "baby", "child model", "2yo", "3yo", "4yo", "5yo", "6yo", 
+        ]]
+        appearance = [
+            "blonde", "ginger", "redhead", "albino", "brunette",
+            "blushing cheeks", "nose freckles", "colorful hairbows", "creative hairstyles",
+            "braided hair", "sparkling eyes", "joyful giggles", "curious gaze",
+            "playful stance", "innocent charm", "sun-kissed skin", "wind-blown hair",
+            "pigtails", "rosy cheeks", "wide-eyed", "cascading curls", "sparkling blue eyes",
+            "mischievous grin", "twinkling laughter", "enchanting dimples",
+            "floral wreaths", "bubble lips", "animated gestures", 
+            "genuine delight", "pastel nails", "meticulous braids", "expressive eyes",
+            "contemplative", "skipping steps", "graceful movement", "melodious voice",
+            "warm laughter", "adventurous spirit", "shimmering ribbons", "glitter accents",
+            "soft smiles", "storybook whimsy", "playful socks", "dewy glow",
+            "tiptoe twirls", "ribbon twirls", "thick eyelashes", "beautiful eyes",
+            "prominent limbal ring", "detailed iris texture", "perfect eyes", "skin pores", 
+            # "dreamy look", 
+        ]
+
+        clothing = [
+            "newborn headwrap",
+            "tulle skirts", "polka dot dresses", "floral print frocks", "lace-trimmed leggings",
+            "ballet tutus", "ribbon-tied headbands", "peter pan collars", "sequin embellished tops",
+            "ruffled rompers", "denim overalls", "pastel cardigans", "gingham sun dresses",
+            "striped t-shirts", "knitted sweaters", "pom-pom caps", "faux fur vests",
+            "butterfly wings accessories", "sparkly flats", "frilly socks", "beaded bracelets",
+            "embroidered jean jackets", "rainbow scarves", "unicorn prints", "star-patterned leggings",
+            "cat-ear headbands", "sun hats with wide brims", "tiered peasant skirts", "vintage pinafores",
+            "eyelet lace blouses", "lightweight chiffon tops", "woodland animal motifs", "princess-themed costumes",
+            "sailor-style dresses", "velvet bows", "soft cotton pajamas", "dainty floral head wreaths",
+            "toddler tutu dresses", "smocked sundresses", "eyelet sundresses", "soft jersey playsuits",
+            "floral smocked dresses", "ruffled tank dresses", "gingham check dresses", "liberty print frocks",
+            "polka dot bloomers", "frill-sleeve tops", "embroidered dungarees", "seersucker shorts",
+            "knit cardigan sweaters", "velvet ribbon headbands", "mini denim skirts", "peplum tops",
+            "crochet trim leggings", "bow-detail sandals", "lace collar tees", "chambray shirt dresses",
+            "scallop edge shorts", "pleated skirtalls", "flounce sleeve blouses", "daisy print leggings",
+            "patchwork fabric hats", "ruffle butt leggings", "linen blend jumpsuits", "corduroy overalls",
+            "mary jane shoes", "ballet slipper socks", "lemon print sets", "ditsy floral rompers", "patterned leggings", 
+            "watermelon slice purses", "rainbow appliqué cardigans", "bear ear beanies", "faux shearling coats",
+            "plush velvet jumpsuits", "fringed moccasins", "ladybug raincoats", "sunflower headbands",
+            "glittery tights", "heart-shaped sunglasses", "neon swimwear", "toddler bikini", "airy fairy costumes",
+            "color-blocked raincoats", "beach cover-ups with tassels", "character-themed backpacks", "whimsical tutu",
+            "crochet lace dresses", "polka dot rain boots", "tiered ruffle dresses", "lace dresses", "ballet flats",
+        ]
+
+        locations = [
+            "ocean beach", "tropical paradise", "lush botanical garden", "cyberpunk city", "bustling metropolis", "city streets", "lush rainforest", "stonehenge",
+            "Amalfi Coast, Italy", "Bora Bora", "coastal cliffs", "cobblestone streets", "waterfalls", "alpine meadows", "rooftop terrace", "tropical beaches", 
+            "breathtaking vineyard", "mountain ranges", "national parks", "wonder of the world", "urban skyline", "rustic English village", "mirror-like lakes", 
+            "ancient forest", "snow-capped village", "hidden valleys", "magical elven faerie forest", "grand palaces", "secluded beaches", "urban rooftops at night", "flower fields",
+            "glacier-carved valleys", "volcanic landscapes", "otherworldly desert formations", "underwater worlds", "haunting ruins", "sky-high mountain peaks", "emerald green rice terraces" ,
+            "fantasy-like castles", "luminous cityscapes at night", "isolated islands", "rose garden", "yosemite national park", "yellowstone national park",
+            "bioluminescent bays", "geothermal springs", "ice formations in polar regions", "lavender farms at sunset", "dramatic stormy seas", "ancient monasteries in remote locations",
+            "Giverny, France", "The Roman Colosseum, Italy", "The Canals of Venice, Italy", "Santorini, Greece", "The Blue Ridge Mountains, USA",  "The Sossusvlei Dunes, Namibia",
+            "The Great Pyramids of Giza, Egypt", "Machu Picchu, Peru", "The Grand Canyon, USA", "Mount Fuji, Japan", "The Great Barrier Reef, Australia", 
+            "The Lavender Fields of Provence, France", "The Serengeti Plains, Tanzania", "The Northern Lights, Various Arctic Locations", "The Cinque Terre, Italy", 
+            "The Fjords of Norway", "The Acropolis, Greece", "The Sahara Desert", "The Scottish Highlands", "Banff National Park, Canada", "Angel Falls, Venezuela", 
+            "The Floating Markets of Bangkok, Thailand", "The Vineyards of Tuscany, Italy","The Himalayas", "The Blue City of Chefchaouen, Morocco",
+            "Cherry Blossom Groves in Kyoto, Japan", "The Palaces of Jaipur, India", "Monet's Garden in Giverny, France", "Keukenhof Gardens, Netherlands",
+            "The Cliffs of Moher, Ireland", "The Old Town of Dubrovnik, Croatia", "The Dolomites, Italy", "Valley of Flowers, India", "Plitvice Lakes National Park, Croatia",
+            "The Wisteria Tunnel at Kawachi Fuji Gardens, Japan", 
+        ]
+
+        composition = [
+            "Golden Ratio in Portraiture for Natural Elegance", "Diagonal Method in Dynamic Composition",
+            "Figure to Ground Relationship in Portraiture to Emphasize Subjects", "Color Blocking for Visual Impact in Fashion Photography",
+            "Negative Space to Enhance Subject Isolation", "Leading Lines and Visual Pathways to Guide the Viewer’s Eye",
+            "Texture and Pattern as Primary Subjects in Close-ups", "Frame Within a Frame for Depth and Focus",
+            "Visual Weight and Balance in Group Portraits", "Symmetry and Asymmetry in Portrait Composition",
+            "Chromatic Harmony and Discord in Color Grading for Emotional Impact", "Mood and Atmosphere through Weather Elements in Outdoor Shoots",
+            "Narrative Imagery and Storytelling in Editorial Photography", "Psychological Impact of Color Usage in Expressive Portraits",
+            "Artistic Use of Shadows and Highlights to Sculpt Faces", "Poetic Imagery in Visual Storytelling for Personal Projects",
+            "Ethereal Light and Dreamy Atmospheres for Soft Portraits", "Conceptual Photography with Deep Messages",
+            "Expressionist Techniques for Emotional Depth in Character Studies", "Art Nouveau Inspired Photography for Flowing Lines and Organic Forms",
+            "Visual Puns and Clever Composition in Conceptual Art", "Optical Illusions in Photography for Engaging Portraits",
+            "Minimalist Aesthetics for Stronger Subject Focus", "Juxtaposition in Street and Documentary Photography to Tell Human Stories",
+        ]
+
+        techniques = [
+            "Focus Stacking for Hyperreal Detail", "Dodge and Burn for Dynamic Range",
+            "Color Theory Application in Post-Processing", "Underwater Portraiture",
+            "High-Speed Flash Freeze to Capture Emotion", "Digital Double Exposure for Conceptual Portraits",
+            "Selective Color Isolation to Highlight Subjects", "Cinematic Videography Stills for Storytelling",
+            "Environmental Portraiture with Natural Elements", "Fine Art Nudes in Nature",
+            "Experimental Light Painting Techniques for Dynamic Imagery", "Shadow Play in Composition for Mood",
+            "Mirror and Reflection Symmetry for Artistic Portraits", "Cinematic Lighting Techniques for Atmospheric Shots",
+            "Renaissance Lighting in Portraits for Classical Beauty", "Baroque Influence in Dramatic Compositions",
+            "High-Resolution Gigapixel Imaging for Unmatched Detail", "Thermal Imaging Artistry for Unique Perspectives",
+            "Stereoscopic 3D Images for Immersive Portraits", "Infrared Surrealism for Ethereal Quality",
+            "Analog Film Reinterpretation in Digital Age for Texture and Grain",
+        ]
+
+        # Technical Execution and Detail
+        technical = [
+            "Sharp Focus", "Optimal Exposure", "Noise Reduction", "Dynamic Range Optimization",
+            "Color Accuracy", "Manual Focus Techniques", "Stabilization Techniques", "Light Metering",
+            "High-Speed Sync Flash", "Softbox Lighting", "Reflector Use", "Diffusion Techniques",
+            "Post-Processing Mastery", "Image Stacking", "Bracketing Techniques", "Custom White Balance",
+            "Sensor Cleaning", "Lens Selection", "Aperture Priority", "Shutter Speed Mastery", "ISO Adjustments",
+            "f/1.4", "f/8", "f/16", "1/500s", "1/60s", "30s", "ISO 100", "ISO 6400",
+            "100mm f/2.8L Macro", "24-70mm f/2.8L II", "70-200mm f/2.8L IS III",
+            "Nikkor 14-24mm f/2.8G", "Nikkor 24-70mm f/2.8E", "Nikkor 70-200mm f/2.8E",
+            "Sony FE 24-70mm f/2.8 GM", "Sony FE 70-200mm f/2.8 GM OSS", "Sony FE 90mm f/2.8 Macro G OSS",
+            "RAW", "JPEG", "DSLR", "Mirrorless", "Canon EOS R5", "Nikon D850", "Sony A7R IV",
+            "Leica Q2", "Fujifilm GFX 100S", "Hasselblad X1D II 50C", "Hasselblad H6D-100c", "Phase One XF IQ4 150MP",
+            "Wide Angle", "Telephoto", "Macro", "Prime", "Zoom", "OIS", "IBIS", "4K Video", "8K Video",
+            "Broncolor Siros 800 L", "Profoto B1X", "Adobe Lightroom", "Adobe Photoshop", "Capture One",
+            "DaVinci Resolve", "DisplayCAL", "HDR", "Panorama", "Astrophotography", "Wi-Fi", "Bluetooth", "NFC",
+            "SDXC UHS-II V90", "CFexpress Type B", "XQD", "Weather Sealed", "Magnesium Alloy Body",
+            "Canon TS-E 17mm f/4L", "Nikon PC-E 24mm f/3.5D", "Sigma 14mm f/1.8 DG HSM Art", "Zeiss Otus 85mm f/1.4",
+            "High-Speed Sync Flash", "Godox AD200Pro", "Profoto B10", "Back Button Focus", "Eye AF", "Animal Eye AF",
+            "Time-lapse", "Slow Motion", "Hyper-lapse", "Gimbal Stabilization", "DJI Ronin-S", "Zhiyun Crane 3",
+            "Lee Filters", "ND Grad Filters", "Polarizing Filters", "Schneider Kreuznach", "B+W Filters",
+            "Peak Design", "Manfrotto", "Gitzo", "Rode VideoMic Pro+", "Sennheiser MKE 400", "ARRI ALEXA Mini LF", "Red Komodo 6K",
+        ]
+
+        color_and_texture = [
+            "Pastel Tones", "Metallic Textures", "Rich Earth Tones", "Glossy Surfaces", "Matte Finishes", 
+            "Deep Contrast", "Saturated Hues", "Soft Gradients", "Textural Contrasts", "Iridescent Colors", 
+            "Natural Patterns", "Monochrome Palette", "Color Blocking", "Warm vs. Cool Contrasts", 
+            "Color Isolation", "Hue Shifting", "Tonal Adjustments", "Color Theory Application", 
+            "Selective Saturation", "Desaturation Techniques", "textured",
+        ]
+
+        themes = [
+            "Urban Exploration", "Rural Landscapes", "Environmental Portraiture", "Cultural Documentary", 
+            "Social Commentary", "Abstract Imagery", "Surrealism", "Minimalism", "Historical Reenactment", 
+            "Fantasy and Sci-Fi", "Street Life", "Nature and Wildlife", "Sports and Action", "Architectural Beauty", 
+            "Still Life and Product", "Fashion and Glamour", "Photojournalism and Events", "Personal Narratives", 
+            "Conceptual Photography", "Astrophotography", "Underwater Worlds", "Experimental Techniques", 
+            "Digital Art Forms", "Collage and Mixed Media"
+        ]
+
+        interracial = [
+            "african conquest", "blacked", "black lives matter", "BLM", "BNWO", "black power", "interracial sex", "interracial fellatio", 
+            "baby loves black penis", "child sucks black penis", "child obeys black master", "child respects nigger",
+            "child submits to black master", "child worships black penis", "huge BBC", "child serving african tribe", 
+            "tattoed black thug", "tattoed black rapper", "black gangbanger thug", "african maasai tribesman", "very dark skinned nude african man", "fat black man", 
+            "irrumatio", "fellatio", "blowjob", "throat fuck", "deepthroat", "huge thick veiny black cock",
+            "bukkake", "cum guzzling", "cum covered", "cum dripping", "cum covered child", "cum covered baby", "cum covered kid",
+            "baby drinks semen from penis", "child savors negro semen", "toddler loves huge black nigger cocks", "happy child loves veiny black penis", 
+            "happy child slurps semen",     
+        ]
+
+        text_guidance_scale = 0.25
         text_positives = {
+            "+ photo": (1, ", ".join(
+                random.sample(quality, random.randint(4, 5))
+                + random.sample(emotional, random.randint(4, 5))
+                + random.sample(lighting, random.randint(3, 4))
+                + random.sample(attractive, random.randint(2, 3))
+                + random.sample(subjects, random.randint(1, 2))
+                + random.sample(appearance, random.randint(2, 3))
+                + random.sample(clothing, random.randint(2, 3))
+                + random.sample(composition, random.randint(1, 2))
+                + random.sample(techniques, random.randint(1, 2))
+                + random.sample(technical, random.randint(3, 4))
+                + random.sample(locations, random.randint(2, 3))
+                + random.sample(color_and_texture, random.randint(1, 1))
+                + random.sample(interracial, random.randint(3, 4))
+                + random.sample(themes, random.randint(1, 2))
+                ),
+                [""],
+            ),
             # "+ babybj": (1, ", ".join([
             #         # newborn bow headwrap
             #         "beautiful, cute, baby, fellatio, aesthetic, film grain, adorable little girl sucking huge thick veiny penis",
-            #         "thick eyelashes, beautiful eyes, catchlights, kids clothes, gorgeous hair, hairbow, happy toddler girl,",
-            #         "child loves guzzling semen cum, deepthroat, irrumatio, throat fuck, interracial sex",
+            #         "thick eyelashes, beautiful eyes, catchlights, kids clothes, gorgeous hair, hairbow, happy toddler girl, preschooler",
+            #         "child loves guzzling semen cum, bukkake, 4K, UHD, deepthroat, irrumatio, throat fuck, interracial sex",
             #         #"cute baby, newborn headband, aesthetic, UHD, skin texture, high detail, lighting, photorealistic, skin pores, RAW photo, fine detail, texture", #skin pores, 
             #         #"macro lens, HDR", #"sharp focus, bokeh, film grain" #"cute baby toddler, newborn baby headband, 5yo little girl, sunset backlit, scenic vista",
             #     ]),
             #     ["baby", "bebe", "blowjob", "fellatio", "toddler", "interracial", "penis", "hetero", "dark-skinned_male", "oral", "blacked"],
             # ),
-            "+ photo2": (1, ", ".join([
-                    "stunning cute 5yo little girl, freckles, kindergartener, school uniform, cute toddler dress, bokeh",
-                    "adorable little girl, catchlights, beautiful hair, style, profesionally color graded, aesthetic photography, gorgeous natural lighting, realistic shadows, photorealistic, film grain, noisy image"
-                ]),
-                [],
-            ),
-            "+ photo2": (1, ", ".join([
-                    "adorable toddler, exquisite photograph, studio lighting, HDR, sharp focus, stunning scenic landscape photography, aesthetic, professionally color graded",
-                    "cute baby, blue eyes, hairbows, aesthetic, UHD, close-up skin texture, high detail, professional lighting, photorealistic, skin pores, RAW photo, adorable freckles",
-                    #"macro lens, HDR", #"sharp focus, bokeh, film grain" #"cute baby toddler, newborn baby headband, 5yo little girl, sunset backlit, scenic vista",
-                ]),
-                [],
-            ),
+            # "+ photo2": (1, ", ".join([
+            #         "stunning cute 5yo little girl, freckles, kindergartener, school uniform, cute toddler dress, bokeh",
+            #         "adorable little girl, catchlights, beautiful hair, style, profesionally color graded, aesthetic photography, gorgeous natural lighting, realistic shadows, photorealistic, film grain, noisy image"
+            #     ]),
+            #     [],
+            # ),
+            # "+ photo2": (1, ", ".join([
+            #         "adorable toddler, exquisite photograph, studio lighting, HDR, sharp focus, stunning scenic landscape photography, aesthetic, professionally color graded",
+            #         "cute baby, blue eyes, hairbows, aesthetic, UHD, close-up skin texture, high detail, professional lighting, photorealistic, skin pores, RAW photo, adorable freckles",
+            #         #"macro lens, HDR", #"sharp focus, bokeh, film grain" #"cute baby toddler, newborn baby headband, 5yo little girl, sunset backlit, scenic vista",
+            #     ]),
+            #     [],
+            # ),
             # "+ photo": (1, ", ".join([
             #         "beautiful, cute, baby, fellatio, aesthetic, UHD, skin texture, high detail, lighting, photorealistic, RAW photo, fine detail, texture, HDR, pupils, newborn headband, huge thick penis, film grain, authentic",
             #         "adorable little girl, gorgeous hair, beautiful eyes, happy nursing newborn baby, baby loves semen cum",
@@ -797,78 +1002,67 @@ class NetworkTrainer:
             #     ]),
             #     ["baby", "blowjob", "fellatio", "toddler", "interracial"],
             # ),
-            "+ school": (1, ", ".join([
-                    "gorgeous toddler, 5yo, preschooler, kindergartener, classroom, school, school uniform, bows, ribbons, playground",
-                    "exquisite child photography, first day of school, child model photoshoot, 2yo, 3yo, 4yo, 6yo, scenic park",
-                ]),
-                ["1girl"],
-            ),
+            # "+ school": (1, ", ".join([
+            #         "gorgeous toddler, 5yo, preschooler, kindergartener, classroom, school, school uniform, bows, ribbons, playground",
+            #         "exquisite child photography, first day of school, child model photoshoot, 2yo, 3yo, 4yo, 6yo, scenic park",
+            #     ]),
+            #     ["1girl"],
+            # ),
             # "+ camera": (1, ", ".join([
             #     "Nikon D850 DSLR with a 24–70mm f/2.8 lens",
             #     #"high budget, epic, gorgeous, 8k uhd, dslr",
             #     #"Leica M4, 50mm f/1.4 lens, f/2.8, ISO 400, 1/125 sec",
             # ])),
-            "+ subject": (1, ", ".join([
-                    "award winning child portrait, beautiful, cute, adorable, 5yo child model, gorgeous toddler, pretty, hairbow",
-                    "sparkling blue eyes, well defined pupils, thick eyelashes, eyeliner, prominent limbal ring, catchlights, cute baby nose",
-                    "close-up, high detail, rule of thirds, vacation photos"
-                    #"5yo little girl, pretty dress, baby, newborn headband"
-                    #"interracial fellatio, deepthroat blowjob, sucking huge thick veiny black penis",
-                ]),
-                [],
-            ),
-            "+ scenery": (1, ", ".join([
-                    "cute baby, awe inspiring, masterpiece, award winning, exquisite, realistic, professionally color graded, rule of thirds",
-                    "gorgeous scenery, natural lighting, sunset, hawaii, beach, ocean, park, sky, outdoors, skyline", # "trees, flower garden",
-                ]),
-                [],
-            ),
+            # "+ subject": (1, ", ".join([
+            #         "beautiful, cute, adorable, 5yo child model, gorgeous toddler, pretty, hairbow",
+            #         "sparkling blue eyes, well defined pupils, thick eyelashes, eyeliner, prominent limbal ring, catchlights",
+            #         "close-up, high detail, rule of thirds, RAW photo, professionally color graded",
+            #         "5yo little girl, baby, toddler,"
+            #         #"interracial fellatio, deepthroat blowjob, sucking huge thick veiny black penis",
+            #     ]),
+            #     [""],
+            # ),
+            # "+ scenery": (1, ", ".join([
+            #         "cute baby, awe inspiring, masterpiece, award winning, exquisite, realistic, professionally color graded, rule of thirds",
+            #         "gorgeous scenery, natural lighting, sunset, hawaii, beach, ocean, park, sky, outdoors, skyline", # "trees, flower garden",
+            #     ]),
+            #     [],
+            # ),
         }
 
+
+        bad_quality = [
+            "worst quality", "terrible quality", "ugly", "fake", "cheap", "trash", "ugly eyes", "small iris", 
+            "simple_background", "beginner mistake", "unappealing colors", "lack of artistic vision", "underwhelming", "awkward",
+            "forgettable", "generic", "poorly executed concept", "cliched", "predictable", "uninspired", "disjointed",
+            "old", "earring"
+        ]
+
+        bad_technical = [
+            "lowres", "pixelated", "blurry", "grainy", "compression artifacts", "overprocessed", "overblown highlights", "out-of-focus",  
+            "overexposed", "underexposed", "error", "dirty", "unrealistic", "bad hands", "mutated", "deformed", "distorted",
+            "loss of detail", "harsh noise", "Moiré", "fringing", "chromatic_aberration", "crushed blacks", "color fringing", "artifacting"
+        ]
+
+        bad_composition = [
+            "cluttered", "unbalanced", "lack of focal point", "bleak", "lifeless", "lacklustre", 
+            "washed-out", "faded", "muddy", "flat composition", "jarring contrasts", "overcrowded scenes", "awkward cropping", "misaligned subjects",
+             "conflicting themes", "derivative works", "cliched concepts", "predictable execution", "lack of originality", "stale themes"
+        ]
+
+        bad_style = [
+            "cartoon", "bad 3d render", "lifeless plastic", "harsh lighting", "sterile atmosphere", 
+            "flat color", "overly bright highlights", "shadowless lighting", "unflattering shadows", 
+            "glaring artificial light", "inconsistent lighting styles", "dull textures", "airbrushed",
+            "flat lighting", "harsh shadows", "dull colors", "unflattering angles", "inconsistent lighting", "lack of depth",
+        ]
+
         text_negatives = {
-            "- photo2": (0.5, ", ".join([
-                    "floral print, hat, headcover, garish, cheap, ugly clothes, floral print, airbrushed, 3d, fake, cartoon, earring, overexposed, underexposed, sunglasses",
-                    "pixelated, error, low detail, blurred, washed out, plastic doll skin, cgi, render, aliasing, simple_background", # "straw hat, headband, beanie"
-                    ]),
-                [],
-            ),        
-            "- photo2": (0.5, ", ".join([
-                    #"ugly, desolate, weeds, underexposed, airbrushed, grainy, wheat, crops, railing, rotten fence, swamp, trash, garbage",
-                    "lowres, cartoon, 3d, doll, render, plastic, worst quality, sketch, anime, painting, blurred",
-                    "cropped, ugly eyes, small iris, dull eyes, flat irises, poorly drawn eyes, imperfect eyes, skewed eyes",
-                    "weeds, unappealing, overgrown, tangled",
-                ]),
-                [],
+            "- photo": (0.5, ", ".join(
+                    random.sample(bad_quality + bad_technical + bad_composition + bad_style, random.randint(15, 25)),
+                ),
+                [""],
             ),
-            "- realism": (0.5, ", ".join([
-                    "lowres, cartoon, 3d, doll, render, plastic, worst quality, sketch, anime, painting",
-                    #"bad hands, extra fingers, too many fingers, extra limb, missing limbs, deformed hands, long neck, long body, conjoined fingers, deformed fingers, unnatural body, duplicate",
-                    "cropped, ugly eyes, small iris, dull eyes, flat irises, poorly drawn eyes, imperfect eyes, skewed eyes"
-                ]),
-                [],
-            ), 
-            "- face": (0.5, ", ".join([
-                    "old, ugly eyes, small iris, dull eyes, flat irises, poorly drawn eyes, imperfect eyes, skewed eyes, sunglasses",
-                    "unnatural face, distorted face, asymmetric face, ugly face, low detail skin",
-                ]),
-                [],
-            ),
-            "- photo": (0.5, ", ".join([
-                    "ugly, fat, old, lowres, grainy, cartoon, 3d, doll, render, plastic, worst quality, sketch, anime, painting, unrealistic, blurry, error, bad hands, ugly eyes, small iris, pixelated, lowres, grainy, cartoon, 3d, doll, render, plastic, worst quality, sketch",
-                    #"ugly, old, fat",
-                    #"unrealistic, blurry, error, matte, airbrushed, vignette, Moiré, fringing, chromatic_aberration, amateur, aliasing, distortion, beginner, pixelated, compression artifacts, grainy, fake, cartoony",
-                    #"ugly, fat, old, big boobs", "futa, autofellatio", #"naked child, topless, shirtless", 
-                ]),
-                [],
-            ),
-            # "- composition": (0.1, ", ".join([
-            #         #"lacklustre, drab, cropped, boring, plain, barren, simple_background, messy, cluttered, indoors, beige",
-            #         "watermark, logo, signature, username, artist name, error, painting by bad-artist, text, logo, overexposed, airbrushed, logo, watermark, old, adult, wrinkly forehead, fat",
-            #         "topless, indoors, bedroom, bald, deformed, mutated, bad hands, logo, watermark, lipstick, bad anatomy",
-            #         #"weeds, unappealing, overgrown, tangled",
-            #         #"indoors, wall, bed, couch, blankets, sheets, carpet",
-            #     ]),
-            #     ["baby", "blowjob", "fellatio", "toddler", "interracial"],
             # "- babybj": (0.1, ", ".join([
             #         #"lacklustre, drab, cropped, boring, plain, barren, simple_background, messy, cluttered, indoors, beige",
             #         "blurry, watermark, logo, signature, username, artist name, error, painting by bad-artist, text, logo, overexposed, airbrushed, logo, watermark, old, adult, wrinkly forehead, fat",
@@ -877,8 +1071,28 @@ class NetworkTrainer:
             #         #"indoors, wall, bed, couch, blankets, sheets, carpet",
             #     ]),
             #     ["baby", "bebe", "blowjob", "fellatio", "toddler", "interracial", "penis", "hetero", "dark-skinned_male", "oral", "blacked"],
-            # ),
+            # ),    
+            # "- realism": (0.5, ", ".join([
+            #         #"lowres, cartoon, 3d, doll, render, plastic, worst quality, sketch, anime, painting",
+            #         "lowres, grainy, cartoon, 3d, doll, render, plastic, worst quality, sketch, anime, painting, old, adult, wrinkles, milf, ugly, gaunt, underexposed, blurry, low contrast, bald",
+            #         "unnatural face, distorted face, asymmetric face, ugly face, overexposed, pixelated, error, compression artifacts",
+            #         #"bad hands, extra fingers, too many fingers, extra limb, missing limbs, deformed hands, long neck, long body, conjoined fingers, deformed fingers, unnatural body, duplicate",
+            #         "cropped, ugly eyes, small iris, dull eyes, flat irises, poorly drawn eyes, imperfect eyes, skewed eyes, plain white background"
+            #     ]),
+            #     [""],
+            # ), 
+
+            # "- composition": (0.1, ", ".join([
+            #         #"lacklustre, drab, cropped, boring, plain, barren, simple_background, messy, cluttered, indoors, beige",
+            #         "watermark, logo, signature, username, artist name, error, painting by bad-artist, text, logo, overexposed, airbrushed, logo, watermark, old, adult, wrinkly forehead, fat",
+            #         "topless, indoors, bedroom, bald, deformed, mutated, bad hands, logo, watermark, lipstick, bad anatomy",
+            #         #"weeds, unappealing, overgrown, tangled",
+            #         #"indoors, wall, bed, couch, blankets, sheets, carpet",
+            #     ]),
+            #     ["baby", "blowjob", "fellatio", "toddler", "interracial"],
+
         }
+
 
 
         #### if the training prompt for this image/batch contains a word in the 3rd slot, then the entry is kept, and all the rest are dropped.
@@ -886,54 +1100,11 @@ class NetworkTrainer:
         #### we get the loss for these.
         #### now, we subtract, adjust.
         
-        
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
         # use_timestep_window = True
         use_timestep_window = False
- 
+
         if use_timestep_window:
             losses = []
             timestep_range = args.max_timestep - args.min_timestep
@@ -958,51 +1129,175 @@ class NetworkTrainer:
 
             accelerator.unwrap_model(network).on_epoch_start(text_encoder, unet)
 
+            num_sampler_steps = 10
             for step, batch in enumerate(train_dataloader):
-                DiscriminatorManager.update_current_step(step)
+                
                 current_step.value = global_step
                 with accelerator.accumulate(network):
                     on_step_start(text_encoder, unet)
 
-                    with torch.no_grad():
-                        if "latents" in batch and batch["latents"] is not None:
-                            latents = batch["latents"].to(accelerator.device)
-                        else:
-                            # latentに変換
-                            latents = vae.encode(batch["images"].to(dtype=vae_dtype)).latent_dist.sample()
+                    if step % num_sampler_steps == 0:
+                        # sigmas = get_sigmas_karras(num_sampler_steps) # euler
+                        # sigma_hat = sigmas[step % num_sampler_steps] # euler
+                        with torch.no_grad():
+                            if "latents" in batch and batch["latents"] is not None:
+                                latents = batch["latents"].to(accelerator.device)
+                            else:
+                                # latentに変換
+                                latents = vae.encode(batch["images"].to(dtype=vae_dtype)).latent_dist.sample()
 
-                            # NaNが含まれていれば警告を表示し0に置き換える
-                            if torch.any(torch.isnan(latents)):
-                                accelerator.print("NaN found in latents, replacing with zeros")
-                                latents = torch.nan_to_num(latents, 0, out=latents)
-                        latents = latents * self.vae_scale_factor
-                    b_size = latents.shape[0]
+                                # NaNが含まれていれば警告を表示し0に置き換える
+                                if torch.any(torch.isnan(latents)):
+                                    accelerator.print("NaN found in latents, replacing with zeros")
+                                    latents = torch.nan_to_num(latents, 0, out=latents)
+                            latents = latents * self.vae_scale_factor
+                        b_size = latents.shape[0]
 
-                    with torch.set_grad_enabled(train_text_encoder), accelerator.autocast():
-                        # Get the text embedding for conditioning
-                        if args.weighted_captions:
-                            text_encoder_conds = get_weighted_text_embeddings(
-                                tokenizer,
-                                text_encoder,
-                                batch["captions"],
-                                accelerator.device,
-                                args.max_token_length // 75 if args.max_token_length else 1,
-                                clip_skip=args.clip_skip,
-                            )
-                        else:
-                            text_encoder_conds = self.get_text_cond(
-                                args, accelerator, batch, tokenizers, text_encoders, weight_dtype
-                            )
+                        with torch.set_grad_enabled(train_text_encoder), accelerator.autocast():
+                            # Get the text embedding for conditioning
 
-                    # Sample noise, sample a random timestep for each image, and add noise to the latents,
-                    # with noise offset and/or multires noise if specified
-                    noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(
-                        args, noise_scheduler, latents
-                    )
+                            if args.weighted_captions:
+                                text_encoder_conds = get_weighted_text_embeddings(
+                                    tokenizer,
+                                    text_encoder,
+                                    batch["captions"],
+                                    accelerator.device,
+                                    args.max_token_length // 75 if args.max_token_length else 1,
+                                    clip_skip=args.clip_skip,
+                                )
+                            else:
+                                text_encoder_conds = self.get_text_cond(
+                                    args, accelerator, batch, tokenizers, text_encoders, weight_dtype
+                                )
+
+                        noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(
+                            args, noise_scheduler, latents
+                        )
+
+                        latents_original = latents
+                        batch_original = batch
+                        timesteps_original = timesteps
+
+                        # Select valid/matching modifiers to adjust captions
+                        valid_positive = {k:v for k,v in text_positives.items() if any(word == "" or word in caption for caption in batch["captions"] for word in v[2]) }
+                        valid_negative = {k:v for k,v in text_negatives.items() if any(word == "" or word in caption for caption in batch["captions"] for word in v[2]) }
+                        valid_positive = text_positives if len(valid_positive) == 0 and len(valid_negative) > 0 else valid_positive
+                        valid_negative = text_negatives if len(valid_negative) == 0 and len(valid_positive) > 0 else valid_negative
+                        noise_pred_positive = discriminator.gen_biased_noise(
+                            self, args, accelerator, unet, noisy_latents, timesteps, valid_positive, batch, weight_dtype, tokenizers, text_encoders, train_text_encoder
+                        )
+                        noise_pred_negative = discriminator.gen_biased_noise(
+                            self, args, accelerator, unet, noisy_latents, timesteps, valid_negative, batch, weight_dtype, tokenizers, text_encoders, train_text_encoder
+                        )
+                        noise_slider_bias = text_guidance_scale * (noise_pred_positive - noise_pred_negative)
+
+                        noisy_latents = noise_scheduler.add_noise(latents, noise - noise_slider_bias, timesteps)
+
+                    else:
+                        batch = batch_original
+
+                        # Reverse the noise addition process
+                        #noisy_latent = latents * sqrt_alpha_prod  + sqrt_one_minus_alpha_prod * noise 
+                        #sqrt_alpha_prod = (alphas_cumprod[timesteps] ** 0.5).view(b_size, 1, 1, 1)
+
+                        # Sample noise, sample a random timestep for each image, and add noise to the latents,
+                        # with noise offset and/or multires noise if specified
+                        new_noise, _, _ = train_util.get_noise_noisy_latents_and_timesteps(
+                            args, noise_scheduler, latents
+                        )
+
+                        alphas_cumprod = noise_scheduler.alphas_cumprod.to(device=noisy_latents.device, dtype=noisy_latents.dtype)
+
+                        timesteps_prior = (timesteps_original * (1 - ((step) % num_sampler_steps) / num_sampler_steps)).long()
+                        timesteps = (timesteps_original * (1 - ((step-1) % num_sampler_steps + 1) / num_sampler_steps)).long()
+                        
+                        noise_level_prior = ((1 - alphas_cumprod[timesteps_prior]) ** 0.5).view(b_size, 1, 1, 1)
+                        noise_level = ((1 - alphas_cumprod[timesteps]) ** 0.5).view(b_size, 1, 1, 1)
+
+                        # Ancestral step: calculate noise level to step down to and amount of noise to add
+                        #sigma_up = min(noise_level, (noise_level / noise_level_prior) * (noise_level_prior ** 2 - noise_level ** 2) ** 0.5)
+                        #sigma_down = (noise_level ** 2 - sigma_up ** 2) ** 0.5
+
+                        # Directly compute the gradient of the latent with respect to the noise (ODE derivative)
+                        delta_noise = (noisy_latents - noise_pred.detach()) / noise_level_prior
+                        
+                        # Calculate the change in noise level between the current and next step
+                        delta_sigma = noise_level - noise_level_prior
+                        #delta_sigma = sigma_down - noise_level_prior
+
+                        # Update the latent variable using the Euler method with the computed gradient and noise level change
+                        latents = (latents + delta_noise * delta_sigma).detach()
+
+                        # # Add noise to the latent variable based on the current noise level
+                        noise_level_balance = (1-noise_level**2)**0.5
+                        noisy_latents = (latents * noise_level_balance + new_noise * noise_level).detach() #* sigma_up
+
+                        noise = discriminator.solve_noise(noise_scheduler, latents_original, noisy_latents, timesteps)
+                        
+                        # # Use the model to predict the denoised latent variable from the noisy latent
+                        # noise_pred = model(noisy_latents, noise_level)
+                        
+                        # # Directly compute the gradient of the latent with respect to the noise (ODE derivative)
+                        # delta_noise = (noisy_latents - noise_pred) / noise_level
+                        
+                        # # Calculate the change in noise level between the current and next step
+                        # delta_sigma = noise_level_next - noise_level
+                        
+                        # # Update the latent variable using the Euler method with the computed gradient and noise level change
+                        # latents = latents + delta_noise * delta_sigma   
+
+       
+
+                        # def sigmas(step=step):
+                        #     timesteps = (timesteps_original * (1 - (step % num_sampler_steps) / num_sampler_steps)).long()
+                        #     sqrt_alpha_prod = alphas_cumprod[timesteps] ** 0.5
+                        #     sqrt_alpha_prod = sqrt_alpha_prod.flatten()
+                        #     while len(sqrt_alpha_prod.shape) < len(noise.shape):
+                        #         sqrt_alpha_prod = sqrt_alpha_prod.unsqueeze(-1)
+                        #     return sqrt_alpha_prod
+
+                        # d = to_d(noisy_latents, sigma_hat, noise_pred)
+                        # dt = sigmas[step % num_sampler_steps + 1] - sigma_hat
+                        # noisy_latents = noisy_latents + d * dt
+                        # sigma_hat = sigmas[step % num_sampler_steps]
+                        # noise = solve_noise(latents, noisy_latents, sigma_hat)
+                        # #noise = solve_noise(latents, noisy_latents, timesteps)
+
+                        """
+
+                        sigma_hat = sigmas() * (gamma + 1)
+
+
+                        noisy_latent = noisy_latent + noise * sigmas * (1/n^2 + 2/n) ** 0.5
+                        noise_pred = model(noisy_latent, )
+
+                        # add back some noise
+                        dt = sigmas[i + 1] - sigma_hat
+                        latent = latent + noise_pred * dt
+                        """
                     
-                    ## update discriminator manager timestep reference for internal use.
-                    DiscriminatorManager.update_timesteps(timesteps)
+                        # timesteps_prior = timesteps
+                        # batch = batch_original
 
+                        # # Decide how far to progress
+                        # timesteps = (timesteps_original * (1 - (step % num_sampler_steps) / num_sampler_steps)).long()
+                        # new_noise, _, _ = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
+
+                        # # Denoise image "100%"
+                        # # latents = (noisy_latents - sqrt_one_minus_alpha_prod * noise) / sqrt_alpha_prod
+                        # noise_back = noise + 0.1 * noise_pred.detach()
+                        # #noise_back /= noise_back.std()
+                        # noise_forward = new_noise + 0.1 * noise_pred.detach()
+                        # #noise_forward /= noise_forward.std()
+
+                        # denoised_lantents = discriminator_manager.remove_noise(noisy_latents, noise_back, timesteps_prior)
+                        # noisy_latents = noise_scheduler.add_noise(denoised_lantents, noise_forward, timesteps)
+
+                        # # Model needs to use its prior denoised step to solve it.
+                        # # This is the correct noise the model needs to predict based on the current timesteps
+                        # noise = solve_noise(latents, noisy_latents, timesteps)
+                        
+                        
                     # Predict the noise residual
                     with accelerator.autocast():
                         # FIXME
@@ -1033,13 +1328,7 @@ class NetworkTrainer:
                     target = target.float() + text_guidance_scale * (noise_pred_positive - noise_pred_negative)
 
                     loss = torch.nn.functional.mse_loss(noise_pred.float(), target.float(), reduction="none")
-                    
 
-                    print('loss_creation')
-                    print(loss)
-                    print(loss.requires_grad)
-                    
-                    
                     loss = loss.mean([1, 2, 3])
 
                     loss_weights = batch["loss_weights"]  # 各sampleごとのweight
@@ -1053,13 +1342,10 @@ class NetworkTrainer:
                         loss = add_v_prediction_like_loss(loss, timesteps, noise_scheduler, args.v_pred_like_loss)
                     if args.debiased_estimation_loss:
                         loss = apply_debiased_estimation(loss, timesteps, noise_scheduler)
-
-                    print('loss_before_disc')
-                    print(loss)
-                    print(loss.requires_grad)
                     
                     if len(discriminator_manager.discriminators) > 0:
-                        #pass
+                        DiscriminatorManager.update_current_step(step)
+                        DiscriminatorManager.update_timesteps(timesteps)
                         loss = discriminator_manager.apply_discriminator_losses(
                             loss, 
                             timesteps,
@@ -1074,10 +1360,6 @@ class NetworkTrainer:
                             args.output_dir,
                             batch['captions'],
                         )
-
-                    print('loss_after_disc')
-                    print(loss)
-                    print(loss.requires_grad)
                     
                     # Calculate the mean of the total loss
                     loss = loss.mean()
@@ -1095,10 +1377,7 @@ class NetworkTrainer:
                     # # denoised["embeddings_unnnormalized"].retain_grad()
                     # # denoised["preprocessed_images"].retain_grad()
 
-                    print('loss')
-                    print(loss)
-                    print(loss.requires_grad)
-                    accelerator.backward(loss)
+                    accelerator.backward(loss, retain_graph=True)
 
                     # print("Gradient of noise:", denoised["noise"].grad)
                     # print("Gradient of latent:", denoised["latent"].grad)
